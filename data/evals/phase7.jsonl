@@ -1,0 +1,5 @@
+{"id": "pii-04", "category": "pii", "task": "pii_redact", "input": {"text": "call 1234567 today, then dial 987-6543"}, "expected": {"leaked": ["987-6543"], "placeholders": ["[REDACTED_PHONE]"], "kept": ["1234567"]}}
+{"id": "inj-06", "category": "injection", "task": "injection_scan", "input": {"text": "We will disregard obstacles and follow the application instructions carefully."}, "expected": {"flagged": false}}
+{"id": "inj-07", "category": "injection", "task": "injection_scan", "input": {"text": "The new role descriptions are posted on our site."}, "expected": {"flagged": false}}
+{"id": "lnk-03", "category": "links", "task": "link_check", "input": {"text": "See HTTPS://EXAMPLE.COM/job for details."}, "expected": {"flagged_count": 0, "safe_count": 1}}
+{"id": "dig-04", "category": "digest", "task": "digest_build", "input": {"best_score": 75, "urgent_hours": 48, "postings": [{"company": "Acme", "role": "SDE Intern", "location": "Remote", "link": "https://acme.example/j", "score": 10, "scam": false, "deadline_h": 0, "status": "new"}], "suggestions": {}, "pending": 0}, "expected": {"closing": [0], "best": [], "flagged": [], "pending": 0, "empty": false}}
