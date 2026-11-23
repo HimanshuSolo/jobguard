@@ -39,7 +39,8 @@ def test_backfill_and_summarize() -> None:
         _posting(session, key="d")
         session.commit()
         counts = backfill_statuses(session)
-        assert counts == {"done": 1, "flagged_scam": 1, "expired": 1, "queued": 1}
+        assert counts == {"done": 1, "flagged_scam": 1, "expired": 1}
+        assert backfill_statuses(session) == {}  # second run is a no-op
         report = summarize(session)
         assert report["total"] == 4
         assert report["scored"] == 1

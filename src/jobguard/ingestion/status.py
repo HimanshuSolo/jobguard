@@ -52,12 +52,13 @@ def summarize(session: Session) -> dict[str, Any]:
 
 
 def backfill_statuses(session: Session) -> dict[str, int]:
-    """One-time honest migration of pre-status rows.
+    """Repair rows whose status predates the state machine.
 
-    Audit history is deliberately NOT consulted: posting ids can alias
-    deleted rows after a table reset, so history-based inference would lie.
-    Only live table state counts: suggestions present -> done, scam flag ->
-    flagged_scam, past deadline -> expired, everything else -> queued.
+    Only live table state is consulted (audit history can alias deleted rows
+    after a reset, so it would lie): a suggestion present means done, scam
+    flag means flagged_scam, past deadline means expired — regardless of any
+    stale or default value. NULL rows with none of those become queued.
+    Rows that already carry a real terminal status are never overwritten.
     Returns counts per assigned status.
     """
     from datetime import UTC, datetime
@@ -66,8 +67,11 @@ def backfill_statuses(session: Session) -> dict[str, int]:
     done_ids = {row[0] for row in session.query(Suggestion.posting_id).all()}
     assigned: dict[str, int] = {}
     for post in session.query(Posting).all():
+        current = post.pipe_status or "queued"
         if post.id in done_ids:
             status = "done"
+        elif current not in ("queued", "analyzing", None):
+            continue  # a real decision already stands; never overwrite it
         elif post.scam_flag:
             status = "flagged_scam"
         elif (
@@ -77,8 +81,9 @@ def backfill_statuses(session: Session) -> dict[str, int]:
             status = "expired"
         else:
             status = "queued"
-        post.pipe_status = status
-        post.pipe_stage = "done" if status == "done" else "none"
-        assigned[status] = assigned.get(status, 0) + 1
+        if status != current or post.pipe_status is None:
+            post.pipe_status = status
+            post.pipe_stage = "done" if status == "done" else "none"
+            assigned[status] = assigned.get(status, 0) + 1
     session.commit()
     return assigned

@@ -169,10 +169,14 @@ def run_pipeline(
                 "rules": sorted(f.rule for f in injection.findings),
             },
         )
+        posting.pipe_status = "quarantined"
         session.commit()
         return PipelineResult(status="quarantined", detail="injection patterns matched")
 
     redacted = redact_pii(cleaned).text
+    posting.pipe_status = "analyzing"
+    posting.pipe_stage = "none"
+    session.commit()
 
     # --- Step 1: classify. Non-postings stop here. ---
     try:
@@ -185,15 +189,20 @@ def run_pipeline(
         )
     except (LLMError, SchemaValidationError, RuntimeError) as exc:
         _audit(session, "pipeline.classify_fail", {"posting_id": posting.id})
+        posting.pipe_status = "failed"
+        posting.pipe_stage = "none"
         session.commit()
         return PipelineResult(status="skipped", detail=f"classify failed: {type(exc).__name__}")
     assert isinstance(classification, Classification)
+    posting.pipe_stage = "classified"
+    session.commit()
     if classification.kind != "posting":
         _audit(
             session,
             "pipeline.skip_non_posting",
             {"posting_id": posting.id, "kind": classification.kind},
         )
+        posting.pipe_status = "skipped_non_job"
         session.commit()
         return PipelineResult(status="skipped", detail=f"kind={classification.kind}")
 
@@ -208,9 +217,12 @@ def run_pipeline(
         )
     except (LLMError, SchemaValidationError, RuntimeError) as exc:
         _audit(session, "pipeline.extract_fail", {"posting_id": posting.id})
+        posting.pipe_status = "failed"
         session.commit()
         return PipelineResult(status="skipped", detail=f"extract failed: {type(exc).__name__}")
     assert isinstance(extraction, PostingExtraction)
+    posting.pipe_stage = "extracted"
+    session.commit()
 
     # --- Scam screen on extracted fields: flagged items stop here. ---
     scam = check_scam(
@@ -226,6 +238,7 @@ def run_pipeline(
             "pipeline.scam_flag",
             {"posting_id": posting.id, "signals": [s.signal for s in scam.signals]},
         )
+        posting.pipe_status = "flagged_scam"
         session.commit()
         return PipelineResult(status="flagged", detail="scam heuristics matched")
 
@@ -244,9 +257,12 @@ def run_pipeline(
         )
     except (LLMError, SchemaValidationError, RuntimeError) as exc:
         _audit(session, "pipeline.match_fail", {"posting_id": posting.id})
+        posting.pipe_status = "failed"
         session.commit()
         return PipelineResult(status="skipped", detail=f"match failed: {type(exc).__name__}")
     assert isinstance(match, MatchResult)
+    posting.pipe_stage = "matched"
+    session.commit()
 
     heuristic = score_posting(
         profile,
@@ -274,6 +290,7 @@ def run_pipeline(
         )
     except (LLMError, SchemaValidationError, RuntimeError) as exc:
         _audit(session, "pipeline.suggest_fail", {"posting_id": posting.id})
+        posting.pipe_status = "failed"
         session.commit()
         return PipelineResult(status="skipped", detail=f"suggest failed: {type(exc).__name__}")
     assert isinstance(card, TailoringCard)
@@ -285,10 +302,13 @@ def run_pipeline(
             "pipeline.fabrication_violation",
             {"posting_id": posting.id, "count": len(violations)},
         )
+        posting.pipe_status = "violations"
         session.commit()
         return PipelineResult(status="violations", detail="; ".join(violations[:3]))
 
     posting.score = match.score
+    posting.pipe_status = "done"
+    posting.pipe_stage = "suggested"
     session.add(
         Suggestion(
             posting_id=posting.id,
