@@ -1,0 +1,42 @@
+name: eval-nightly
+
+# Nightly live-model check: the deterministic suite (must stay green) plus a
+# one-call live smoke through the configured provider (reachability + schema
+# drift). The smoke uses synthetic text only — never real mailbox content.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  live-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Deterministic suite + live smoke
+        env:
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+        run: uv run jobguard eval --live-smoke --report-html evals/report.html --report-md /tmp/eval.md
+
+      - name: Upload eval report
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: |
+            evals/report.html
+            evals/metrics.json
