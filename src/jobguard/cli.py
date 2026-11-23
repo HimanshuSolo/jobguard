@@ -84,6 +84,8 @@ def _run_pipeline_stage(session: Session, settings: Settings) -> None:
     budget = TokenBudget(max_tokens=settings.llm_max_tokens_per_run)
     done_ids = {row[0] for row in session.query(Suggestion.posting_id).all()}
     pending = session.query(Posting).filter(Posting.scam_flag.is_(False)).all()
+    # Internships first: quota is scarce, so spend it on what the owner wants.
+    pending.sort(key=lambda p: (0 if "intern" in (p.role or "").casefold() else 1, p.id))
     counts: dict[str, int] = {}
     first = True
     for post in pending:
