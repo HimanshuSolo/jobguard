@@ -1,0 +1,40 @@
+skills:
+  - Python
+  - Rust
+  - Java
+  - C++
+  - JavaScript
+  - TypeScript
+  - SQL
+  - FastAPI
+  - Django
+  - Node.js
+  - Express
+  - Axum
+  - Tokio
+  - PostgreSQL
+  - MongoDB
+  - React
+  - Next.js
+  - Docker
+  - Kubernetes
+  - Kafka
+  - PyTorch
+  - REST
+role_types:
+  - SDE
+  - Software Engineer
+  - Backend
+  - Full Stack
+  - Rust
+  - Python
+  - Intern
+locations:
+  - Remote
+  - Bengaluru
+  - Gurugram
+  - New Delhi
+  - Delhi NCR
+  - Noida
+  - Faridabad
+new_grad: true
