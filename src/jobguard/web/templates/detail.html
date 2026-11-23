@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ posting.role }} — JobGuard{% endblock %}
+{% block content %}
+<h1>{{ posting.role or "Untitled role" }} <span class="accent">at {{ posting.company or "?" }}</span></h1>
+<p class="sub">{{ posting.location }}{% if posting.deadline %} · closes {{ posting.deadline }}{% endif %} · score {{ "%.0f"|format(posting.score) }} · {{ posting.status }}</p>
+{% if posting.scam_flag %}<p class="notice flag">Flagged suspicious — do not apply without review.</p>{% endif %}
+{% if posting.link %}<p><a class="btn btn-warm" href="{{ posting.link }}">Apply</a></p>{% endif %}
+<p class="meta">Sources: {{ posting.seen_on|join(", ") }}</p>
+
+<h2>Resume keyword check</h2>
+<div class="chips">
+{% for k in matched %}<span class="chip have">✓ {{ k }}</span>{% endfor %}
+{% for k in missing %}<span class="chip missing">+ {{ k }}</span>{% endfor %}
+{% if not matched and not missing %}<span class="meta">No tech keywords detected in this posting.</span>{% endif %}
+</div>
+<p class="meta">✓ you have it · + missing from your resume (consider learning or a project)</p>
+
+<h2>Tailoring suggestions</h2>
+<div class="detail">
+{% if suggestion %}
+<ul>
+{% for s in suggestion.card.get("suggestions", []) %}
+<li><b>{{ s.get("kind") }}</b> [{{ s.get("resume_item_ids", [])|join(", ") }}] — {{ s.get("text", "") }}</li>
+{% endfor %}
+</ul>
+{% if suggestion.gaps %}<p class="meta">Gaps: {{ suggestion.gaps|join(", ") }}</p>{% endif %}
+{% else %}
+<p class="meta">No tailoring suggestion yet — run the worker with an LLM provider configured.</p>
+{% endif %}
+</div>
+{% endblock %}
