@@ -1,0 +1,126 @@
+/* JobGuard — minimalist theme.
+   Ocean Teal #0E6E73 · Cloud Grey #D7DCDF · Papaya #FF9459 */
+:root {
+  --teal: #0e6e73;
+  --teal-dark: #0a5458;
+  --cloud: #d7dcdf;
+  --cloud-light: #eef1f3;
+  --papaya: #ff9459;
+  --papaya-dark: #e07a3f;
+  --ink: #1d2b2c;
+  --muted: #5c6f71;
+  --card: #ffffff;
+  --danger: #b3261e;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: "Avenir Next", "Segoe UI", system-ui, -apple-system, sans-serif;
+  margin: 0;
+  color: var(--ink);
+  background: var(--cloud-light);
+}
+.topbar {
+  background: var(--teal);
+  color: #fff;
+  padding: 0.9rem 2rem;
+  display: flex;
+  align-items: center;
+  gap: 1.4rem;
+}
+.topbar .brand { font-weight: 800; letter-spacing: 0.35em; font-size: 1.05rem; }
+.topbar a { color: #fff; text-decoration: none; opacity: 0.9; }
+.topbar a:hover { opacity: 1; text-decoration: underline; }
+.topbar .spacer { flex: 1; }
+.topbar button {
+  background: var(--papaya);
+  border: none;
+  color: #1d2b2c;
+  font-weight: 700;
+  padding: 0.45rem 1rem;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.topbar button:hover { background: var(--papaya-dark); }
+main { max-width: 72rem; margin: 2rem auto; padding: 0 1.5rem 4rem; }
+h1 { font-size: 2rem; letter-spacing: -0.01em; }
+h1 .accent { color: var(--teal); }
+.sub { color: var(--muted); margin-top: -0.6rem; }
+.toolbar {
+  background: var(--card);
+  border: 1px solid var(--cloud);
+  border-radius: 14px;
+  padding: 0.9rem 1.1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  align-items: center;
+  margin-bottom: 1.2rem;
+}
+.toolbar input[type="text"], .toolbar select {
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--cloud);
+  border-radius: 8px;
+}
+.btn {
+  background: var(--teal);
+  color: #fff;
+  border: none;
+  padding: 0.5rem 1.1rem;
+  border-radius: 999px;
+  cursor: pointer;
+  font-weight: 600;
+  text-decoration: none;
+  display: inline-block;
+}
+.btn:hover { background: var(--teal-dark); }
+.btn-warm { background: var(--papaya); color: #1d2b2c; }
+.btn-warm:hover { background: var(--papaya-dark); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr)); gap: 1rem; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--cloud);
+  border-top: 4px solid var(--teal);
+  border-radius: 14px;
+  padding: 1.1rem 1.2rem;
+}
+.card.scam { border-top-color: var(--danger); }
+.card h3 { margin: 0 0 0.3rem; font-size: 1.08rem; }
+.card h3 a { color: var(--ink); text-decoration: none; }
+.card h3 a:hover { color: var(--teal); }
+.meta { color: var(--muted); font-size: 0.9rem; }
+.score {
+  display: inline-block;
+  background: var(--papaya);
+  color: #1d2b2c;
+  font-weight: 800;
+  border-radius: 999px;
+  padding: 0.15rem 0.7rem;
+  font-size: 0.9rem;
+}
+.flag { color: var(--danger); font-weight: 700; }
+.chips { margin: 0.6rem 0; display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.chip {
+  font-size: 0.8rem;
+  border-radius: 999px;
+  padding: 0.15rem 0.65rem;
+  background: var(--cloud-light);
+  border: 1px solid var(--cloud);
+}
+.chip.have { background: #e3f2ef; border-color: var(--teal); color: var(--teal-dark); }
+.chip.missing { background: #fff1e8; border-color: var(--papaya); color: #8a4a1f; }
+.detail {
+  background: var(--card);
+  border: 1px solid var(--cloud);
+  border-radius: 14px;
+  padding: 1.5rem 1.7rem;
+}
+table.clean { border-collapse: collapse; width: 100%; background: var(--card); border-radius: 14px; overflow: hidden; }
+table.clean th, table.clean td { border-bottom: 1px solid var(--cloud); padding: 0.6rem 0.8rem; text-align: left; }
+table.clean th { background: var(--teal); color: #fff; }
+.notice { background: #fff8ef; border: 1px solid var(--papaya); border-radius: 10px; padding: 0.7rem 1rem; }
+.error { color: var(--danger); font-weight: 700; }
+textarea.upload { width: 100%; min-height: 14rem; font-family: monospace; }
+.empty { color: var(--muted); padding: 2rem; text-align: center; }
+.login-wrap { max-width: 26rem; margin: 6rem auto; background: var(--card); border-radius: 16px; padding: 2rem; border-top: 6px solid var(--teal); }
+.login-wrap input { width: 100%; padding: 0.6rem; margin: 0.3rem 0 0.9rem; border: 1px solid var(--cloud); border-radius: 8px; }
+.login-wrap .brand { letter-spacing: 0.35em; font-weight: 800; color: var(--teal); }
