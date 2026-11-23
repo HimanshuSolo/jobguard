@@ -28,6 +28,23 @@ def test_strips_comments_and_hidden_styles() -> None:
     assert any(r.startswith("hidden-style:") for r in report.removed)
 
 
+def test_collapse_boilerplate() -> None:
+    from jobguard.guardrails import collapse_boilerplate
+
+    junk = "https://x.example/" + "a" * 300
+    para = "word " * 100
+    out = collapse_boilerplate(f"{junk}\n{para}").splitlines()
+    assert out[0] == para  # pure long URL line dropped, paragraph intact
+    embedded = collapse_boilerplate("See this [](https://t.example/" + "c" * 200 + ") now")
+    assert "c" * 200 not in embedded and "now" in embedded
+    short_link = collapse_boilerplate("Apply now\nhttps://x.example/j/1").splitlines()
+    assert short_link[-1] == "https://x.example/j/1"  # short links kept
+    pixel = collapse_boilerplate("[](https://track.example/" + "b" * 200 + ")")
+    assert pixel == ""  # tracking pixel dropped
+    token = collapse_boilerplate("x" * 250)
+    assert token.endswith("… [truncated]")  # other spaceless junk truncated
+
+
 def test_strips_zero_width_chars() -> None:
     report = strip_hidden_text("<p>En\u200bgin\u200ceer</p>")
     assert report.text == "Engineer"
