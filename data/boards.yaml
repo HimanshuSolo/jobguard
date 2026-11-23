@@ -1,0 +1,12 @@
+# Company job boards (public JSON endpoints). Copy to data/boards.yaml and edit.
+# Slugs are public: Greenhouse slug = boards.greenhouse.io/<slug>,
+# Lever slug = lever.co/<slug> jobs page.
+boards:
+  - provider: greenhouse
+    slug: example-co
+    company: Example Co
+    include_content: false
+  - provider: lever
+    slug: example-labs
+    company: Example Labs
+    include_content: false
