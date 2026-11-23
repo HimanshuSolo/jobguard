@@ -1,6 +1,10 @@
 """Input guardrails: hidden text, injection, PII, links, scam heuristics."""
 
-from jobguard.guardrails.hidden import HiddenTextReport, strip_hidden_text
+from jobguard.guardrails.hidden import (
+    HiddenTextReport,
+    collapse_boilerplate,
+    strip_hidden_text,
+)
 from jobguard.guardrails.injection import (
     InjectionFinding,
     InjectionReport,
@@ -22,6 +26,7 @@ __all__ = [
     "ScamSignal",
     "check_links",
     "check_scam",
+    "collapse_boilerplate",
     "extract_urls",
     "redact_pii",
     "scan_injection",
