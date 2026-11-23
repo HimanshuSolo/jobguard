@@ -109,11 +109,23 @@ def _run_pipeline_stage(session: Session, settings: Settings) -> None:
     session.commit()
     print(f"triage: {triaged} (local only, no LLM calls, no sleeping)")
 
-    # Phase B: LLM loop over triage survivors, internships first.
-    pending = (
+    # Phase B: LLM loop over the bounded selection (threshold + top-N).
+    # Everything else stays queued with its cheap score, explicitly
+    # "not analyzed yet", and can be analyzed on demand later.
+    from jobguard.ingestion import select_for_llm
+
+    queued = (
         session.query(Posting).filter(Posting.pipe_status == "queued").order_by(Posting.id).all()
     )
-    pending.sort(key=lambda p: (0 if "intern" in (p.role or "").casefold() else 1, p.id))
+    pending = select_for_llm(
+        queued,
+        top_n=settings.llm_top_n_per_run,
+        min_cheap_score=settings.llm_cheap_score_min,
+    )
+    print(
+        f"selected {len(pending)}/{len(queued)} for LLM "
+        f"(top_n={settings.llm_top_n_per_run}, min_score={settings.llm_cheap_score_min})"
+    )
     counts: dict[str, int] = {}
     for post in pending:
         try:

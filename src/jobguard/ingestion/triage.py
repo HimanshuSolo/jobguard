@@ -1,13 +1,15 @@
-"""Local-first triage (Phase 8, Step 2.2).
+"""Local-first triage + LLM candidate selection (Phase 8).
 
-Runs every non-LLM stage for one posting — guardrails, scam screen, expiry
-check, cheap deterministic ranking — with zero network calls and zero
-sleeping. The worker runs triage for ALL pending items first, persists
-terminal outcomes immediately, and only then spends LLM budget on survivors.
+Triage runs every non-LLM stage for one posting (no network, no sleep).
+`select_for_llm` then picks the bounded set the LLM may spend budget on:
+cheap score at/above threshold, internships first, then highest cheap
+score, capped at top-N. Everything else stays queued with its cheap score
+recorded, explicitly "not analyzed yet".
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -66,3 +68,19 @@ def triage_posting(post: Posting, *, profile: Profile, sender: str = "") -> Tria
         deadline=post.deadline.isoformat() if post.deadline else "",
     )
     return TriageResult(status="queued", cheap_score=rank.score, reasons=list(rank.reasons))
+
+
+def select_for_llm(
+    posts: Sequence[Posting], *, top_n: int, min_cheap_score: float
+) -> list[Posting]:
+    """Bound the LLM spend: above-threshold items, internships first, then
+    highest cheap score, capped at top_n. The rest stay queued."""
+    eligible = [p for p in posts if (p.cheap_score or 0.0) >= min_cheap_score]
+    eligible.sort(
+        key=lambda p: (
+            0 if "intern" in (p.role or "").casefold() else 1,
+            -(p.cheap_score or 0.0),
+            p.id,
+        )
+    )
+    return eligible[: max(top_n, 0)]

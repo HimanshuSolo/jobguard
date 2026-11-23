@@ -61,6 +61,32 @@ def test_triage_expires_past_deadline() -> None:
     assert result.status == "expired"
 
 
+def test_select_for_llm_threshold_topn_and_order() -> None:
+    from jobguard.ingestion import select_for_llm
+
+    def _p(role: str, score: float, key: str) -> Posting:
+        post = _post(role=role, key=key)
+        post.cheap_score = score
+        return post
+
+    posts = [
+        _p("Marketing Manager", 90.0, "a"),  # high score, not intern
+        _p("SDE Intern", 20.0, "b"),  # intern, above threshold
+        _p("Backend Intern", 80.0, "c"),  # intern, highest
+        _p("Data Entry", 50.0, "d"),  # below threshold? no: 50 >= 15, kept
+        _p("Clerk", 5.0, "e"),  # below threshold -> dropped
+    ]
+    picked = select_for_llm(posts, top_n=3, min_cheap_score=15.0)
+    assert [p.role for p in picked] == [
+        "Backend Intern",
+        "SDE Intern",
+        "Marketing Manager",
+    ]
+    assert all(p.cheap_score >= 15.0 for p in picked)
+    assert select_for_llm(posts, top_n=0, min_cheap_score=0) == []
+    assert select_for_llm([], top_n=10, min_cheap_score=0) == []
+
+
 def test_triage_is_deterministic_and_fast() -> None:
     import time
 

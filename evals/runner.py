@@ -519,8 +519,7 @@ def _run_pipeline_smoke(case: dict[str, Any]) -> dict[str, Any]:
     for marker, key in [
         ("[classify]", "classify_json"),
         ("[extract]", "extract_json"),
-        ("[match]", "match_json"),
-        ("[suggest]", "suggest_json"),
+        ("[match_suggest]", "match_suggest_json"),
     ]:
         if key in raw:
             rules.append((marker, str(raw[key])))

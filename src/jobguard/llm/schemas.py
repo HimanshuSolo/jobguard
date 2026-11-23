@@ -66,6 +66,30 @@ class TailoringCard(BaseModel):
     gaps: list[str] = Field(default_factory=list)
 
 
+class MatchAndSuggest(BaseModel):
+    """Steps 3+4 in one call: fit score plus the tailoring card.
+
+    Flat shape (not nested) so the model emits one object with one key list.
+    Validates exactly as strictly as the separate schemas: the card half is
+    checked by the same fabrication checker via ``as_tailoring_card``.
+    """
+
+    score: float = Field(ge=0.0, le=100.0)
+    reasons: list[str] = Field(default_factory=list)
+    resume_item_ids: list[str] = Field(default_factory=list)
+    posting_key: str = Field(min_length=1)
+    suggestions: list[TailoringSuggestion] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+
+    def as_tailoring_card(self) -> TailoringCard:
+        """Project the card half for the fabrication checker."""
+        return TailoringCard(
+            posting_key=self.posting_key,
+            suggestions=list(self.suggestions),
+            gaps=list(self.gaps),
+        )
+
+
 def parse_strict(model: type[BaseModel], text: str) -> BaseModel:
     """Parse raw LLM text into ``model``; raise SchemaValidationError if bad."""
     try:

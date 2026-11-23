@@ -17,7 +17,7 @@ from jobguard.ingestion.status import (
     summarize,
 )
 from jobguard.ingestion.sync import SyncResult, sync_source
-from jobguard.ingestion.triage import TriageResult, triage_posting
+from jobguard.ingestion.triage import TriageResult, select_for_llm, triage_posting
 
 __all__ = [
     "DEFAULT_KEYWORDS",
@@ -29,6 +29,7 @@ __all__ = [
     "TERMINAL_STATUSES",
     "TriageResult",
     "backfill_statuses",
+    "select_for_llm",
     "canonical_key",
     "keep",
     "key_of",

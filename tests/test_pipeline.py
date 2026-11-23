@@ -42,10 +42,10 @@ def _client(suggest_ids: str = '["exp-1"]') -> FakeClient:
                 '{"company": "Acme", "role": "SDE Intern", "location": "Remote",'
                 ' "link": "https://acme.example/j", "skills": ["Python"]}',
             ),
-            ("[match]", '{"score": 82, "reasons": ["good fit"], "resume_item_ids": ["exp-1"]}'),
             (
-                "[suggest]",
-                '{"posting_key": "k", "suggestions": [{"kind": "reword",'
+                "[match_suggest]",
+                '{"score": 82, "reasons": ["good fit"], "resume_item_ids": ["exp-1"],'
+                ' "posting_key": "k", "suggestions": [{"kind": "reword",'
                 f' "resume_item_ids": {suggest_ids}, "text": "Emphasize FastAPI."}}],'
                 ' "gaps": []}',
             ),
@@ -137,8 +137,9 @@ def test_scam_flagged_no_llm_match() -> None:
         )
         assert result.status == "flagged"
         assert post.scam_flag is True
-        assert not [c for c in client.calls if "[match]" in c["user"]]
+        assert not [c for c in client.calls if "[match_suggest]" in c["user"]]
         assert session.query(Suggestion).count() == 0
+        assert post.pipe_status == "flagged_scam"
 
 
 def test_injection_quarantined() -> None:
@@ -178,6 +179,40 @@ def test_fabrication_violation_blocks_suggestion() -> None:
         )
         assert result.status == "violations"
         assert session.query(Suggestion).count() == 0
+
+
+def test_template_parsed_skips_classify_and_extract() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    init_db(engine)
+    client = FakeClient(
+        rules=[
+            (
+                "[match_suggest]",
+                '{"score": 70, "reasons": [], "resume_item_ids": ["exp-1"],'
+                ' "posting_key": "k", "suggestions": [{"kind": "emphasize",'
+                ' "resume_item_ids": ["exp-1"], "text": "Good."}], "gaps": []}',
+            )
+        ],
+        default="NOT-JSON",
+    )
+    with Session(engine) as session:
+        post = _posting(session, link="https://acme.example/j")
+        profile, resume = _env()
+        result = run_pipeline(
+            post,
+            body="ignored when columns are complete",
+            sender="s",
+            client=client,
+            profile=profile,
+            resume=resume,
+            session=session,
+        )
+        assert result.status == "suggested"
+        assert post.pipe_status == "done"
+        assert post.pipe_stage == "suggested"
+        markers = [c["user"] for c in client.calls]
+        assert len(markers) == 1
+        assert "[match_suggest]" in markers[0]
 
 
 def test_budget_exhaustion_skips() -> None:

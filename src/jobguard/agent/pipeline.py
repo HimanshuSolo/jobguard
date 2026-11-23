@@ -28,10 +28,9 @@ from jobguard.guardrails import (
 from jobguard.llm.client import LLMClient, LLMError
 from jobguard.llm.schemas import (
     Classification,
-    MatchResult,
+    MatchAndSuggest,
     PostingExtraction,
     SchemaValidationError,
-    TailoringCard,
     parse_strict,
 )
 from jobguard.resume.checker import check_card
@@ -64,21 +63,16 @@ _SYSTEMS: dict[str, str] = {
         '"deadline": "", "link": "https://acme.example/j", '
         '"skills": ["Python"], "eligibility": "Final-year students"}'
     ),
-    "match": (
-        "Score this posting's fit 0-100. Respond with exactly one JSON "
-        "object and no other text, with exactly these keys: score (0-100), "
-        "reasons (array of strings), resume_item_ids (array of strings). "
-        'Example: {"score": 82, "reasons": ["Python overlap"], "resume_item_ids": []}'
-    ),
-    "suggest": (
-        "Suggest resume tailoring. Every suggestion must cite resume item IDs "
-        "from the provided list, or be kind gap with no IDs. Respond with "
-        "exactly one JSON object and no other text, with exactly these keys: "
-        "posting_key, suggestions (array of {kind: reword|emphasize|gap, "
-        "resume_item_ids, text}), gaps (array of strings). "
-        'Example: {"posting_key": "k", "suggestions": '
-        '[{"kind": "reword", "resume_item_ids": ["exp-1"], "text": "Emphasize FastAPI."}], '
-        '"gaps": []}'
+    "match_suggest": (
+        "Score this posting's fit 0-100 AND suggest resume tailoring, in one "
+        "JSON object and no other text, with exactly these keys: score (0-100), "
+        "reasons (array of strings), resume_item_ids (array of strings), "
+        "posting_key (string), suggestions (array of {kind: reword|emphasize|gap, "
+        "resume_item_ids, text}), gaps (array of strings). Every suggestion must "
+        "cite resume item IDs from the provided list, or be kind gap with no IDs. "
+        'Example: {"score": 82, "reasons": ["Python overlap"], "resume_item_ids": ["exp-1"], '
+        '"posting_key": "k", "suggestions": [{"kind": "reword", "resume_item_ids": ["exp-1"], '
+        '"text": "Emphasize FastAPI."}], "gaps": []}'
     ),
 }
 
@@ -97,8 +91,8 @@ _RETRY_EXAMPLES: dict[str, str] = {
     "Classification": '{"kind": "posting", "confidence": 0.9, "reason": "..."}',
     "PostingExtraction": '{"company": "Acme", "role": "SDE Intern", "location": "", '
     '"deadline": "", "link": "", "skills": [], "eligibility": ""}',
-    "MatchResult": '{"score": 0, "reasons": [], "resume_item_ids": []}',
-    "TailoringCard": '{"posting_key": "k", "suggestions": [], "gaps": []}',
+    "MatchAndSuggest": '{"score": 0, "reasons": [], "resume_item_ids": [], '
+    '"posting_key": "k", "suggestions": [], "gaps": []}',
 }
 
 
@@ -178,51 +172,71 @@ def run_pipeline(
     posting.pipe_stage = "none"
     session.commit()
 
-    # --- Step 1: classify. Non-postings stop here. ---
-    try:
-        classification = _complete_parsed(
-            client,
-            Classification,
-            system=_SYSTEMS["classify"],
-            user=f"[classify]\n{redacted}",
-            budget=budget,
+    # --- Steps 1+2: classify + extract, skipped when template parsers ---
+    # already produced labeled company/role/link columns. Triage only runs
+    # the LLM for what parsers could not decide.
+    template_parsed = bool(
+        (posting.company or "").strip()
+        and (posting.role or "").strip()
+        and (posting.link or "").strip()
+    )
+    if template_parsed:
+        classification_kind = "posting"
+        extraction = PostingExtraction(
+            company=posting.company,
+            role=posting.role,
+            location=posting.location or "",
+            link=posting.link or "",
+            skills=list(posting.skills or []),
+            eligibility=posting.eligibility or "",
         )
-    except (LLMError, SchemaValidationError, RuntimeError) as exc:
-        _audit(session, "pipeline.classify_fail", {"posting_id": posting.id})
-        posting.pipe_status = "failed"
-        posting.pipe_stage = "none"
+        posting.pipe_stage = "extracted"
         session.commit()
-        return PipelineResult(status="skipped", detail=f"classify failed: {type(exc).__name__}")
-    assert isinstance(classification, Classification)
-    posting.pipe_stage = "classified"
-    session.commit()
-    if classification.kind != "posting":
-        _audit(
-            session,
-            "pipeline.skip_non_posting",
-            {"posting_id": posting.id, "kind": classification.kind},
-        )
-        posting.pipe_status = "skipped_non_job"
+    else:
+        try:
+            classification = _complete_parsed(
+                client,
+                Classification,
+                system=_SYSTEMS["classify"],
+                user=f"[classify]\n{redacted}",
+                budget=budget,
+            )
+        except (LLMError, SchemaValidationError, RuntimeError) as exc:
+            _audit(session, "pipeline.classify_fail", {"posting_id": posting.id})
+            posting.pipe_status = "failed"
+            posting.pipe_stage = "none"
+            session.commit()
+            return PipelineResult(status="skipped", detail=f"classify failed: {type(exc).__name__}")
+        assert isinstance(classification, Classification)
+        posting.pipe_stage = "classified"
         session.commit()
-        return PipelineResult(status="skipped", detail=f"kind={classification.kind}")
-
-    # --- Step 2: extract structured fields. ---
-    try:
-        extraction = _complete_parsed(
-            client,
-            PostingExtraction,
-            system=_SYSTEMS["extract"],
-            user=f"[extract]\n{redacted}",
-            budget=budget,
-        )
-    except (LLMError, SchemaValidationError, RuntimeError) as exc:
-        _audit(session, "pipeline.extract_fail", {"posting_id": posting.id})
-        posting.pipe_status = "failed"
+        if classification.kind != "posting":
+            _audit(
+                session,
+                "pipeline.skip_non_posting",
+                {"posting_id": posting.id, "kind": classification.kind},
+            )
+            posting.pipe_status = "skipped_non_job"
+            session.commit()
+            return PipelineResult(status="skipped", detail=f"kind={classification.kind}")
+        classification_kind = classification.kind
+        try:
+            extraction = _complete_parsed(
+                client,
+                PostingExtraction,
+                system=_SYSTEMS["extract"],
+                user=f"[extract]\n{redacted}",
+                budget=budget,
+            )
+        except (LLMError, SchemaValidationError, RuntimeError) as exc:
+            _audit(session, "pipeline.extract_fail", {"posting_id": posting.id})
+            posting.pipe_status = "failed"
+            session.commit()
+            return PipelineResult(status="skipped", detail=f"extract failed: {type(exc).__name__}")
+        assert isinstance(extraction, PostingExtraction)
+        posting.pipe_stage = "extracted"
         session.commit()
-        return PipelineResult(status="skipped", detail=f"extract failed: {type(exc).__name__}")
-    assert isinstance(extraction, PostingExtraction)
-    posting.pipe_stage = "extracted"
-    session.commit()
+    assert classification_kind == "posting"
 
     # --- Scam screen on extracted fields: flagged items stop here. ---
     scam = check_scam(
@@ -242,15 +256,17 @@ def run_pipeline(
         session.commit()
         return PipelineResult(status="flagged", detail="scam heuristics matched")
 
-    # --- Step 3: match against the profile. ---
+    # --- Steps 3+4: match + suggest in ONE call. The flat MatchAndSuggest
+    # schema validates exactly as strictly as the separate schemas did.
     try:
-        match = _complete_parsed(
+        combo = _complete_parsed(
             client,
-            MatchResult,
-            system=_SYSTEMS["match"],
+            MatchAndSuggest,
+            system=_SYSTEMS["match_suggest"],
             user=(
-                "[match]\n"
+                "[match_suggest]\n"
                 f"Profile skills: {', '.join(profile.skills)}\n"
+                f"Resume IDs: {sorted(resume.known_ids())}\n"
                 f"Posting: {extraction.model_dump_json()}"
             ),
             budget=budget,
@@ -259,8 +275,10 @@ def run_pipeline(
         _audit(session, "pipeline.match_fail", {"posting_id": posting.id})
         posting.pipe_status = "failed"
         session.commit()
-        return PipelineResult(status="skipped", detail=f"match failed: {type(exc).__name__}")
-    assert isinstance(match, MatchResult)
+        return PipelineResult(
+            status="skipped", detail=f"match+suggest failed: {type(exc).__name__}"
+        )
+    assert isinstance(combo, MatchAndSuggest)
     posting.pipe_stage = "matched"
     session.commit()
 
@@ -271,30 +289,11 @@ def run_pipeline(
         skills=extraction.skills,
         text=redacted,
     )
-    reasons = list(match.reasons) + [
+    reasons = list(combo.reasons) + [
         f"heuristic rank {heuristic.score:.0f}: {'; '.join(heuristic.reasons) or 'no overlap'}"
     ]
 
-    # --- Step 4: tailoring suggestions, fabrication-checked. ---
-    try:
-        card = _complete_parsed(
-            client,
-            TailoringCard,
-            system=_SYSTEMS["suggest"],
-            user=(
-                "[suggest]\n"
-                f"Resume IDs: {sorted(resume.known_ids())}\n"
-                f"Posting: {extraction.model_dump_json()}"
-            ),
-            budget=budget,
-        )
-    except (LLMError, SchemaValidationError, RuntimeError) as exc:
-        _audit(session, "pipeline.suggest_fail", {"posting_id": posting.id})
-        posting.pipe_status = "failed"
-        session.commit()
-        return PipelineResult(status="skipped", detail=f"suggest failed: {type(exc).__name__}")
-    assert isinstance(card, TailoringCard)
-
+    card = combo.as_tailoring_card()
     violations = check_card(card, resume)
     if violations:
         _audit(
@@ -306,7 +305,7 @@ def run_pipeline(
         session.commit()
         return PipelineResult(status="violations", detail="; ".join(violations[:3]))
 
-    posting.score = match.score
+    posting.score = combo.score
     posting.pipe_status = "done"
     posting.pipe_stage = "suggested"
     session.add(
@@ -320,7 +319,7 @@ def run_pipeline(
     _audit(
         session,
         "pipeline.suggested",
-        {"posting_id": posting.id, "score": match.score},
+        {"posting_id": posting.id, "score": combo.score},
     )
     session.commit()
-    return PipelineResult(status="suggested", score=match.score, reasons=reasons)
+    return PipelineResult(status="suggested", score=combo.score, reasons=reasons)

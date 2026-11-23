@@ -25,7 +25,7 @@
 </ul>
 {% if suggestion.gaps %}<p class="meta">Gaps: {{ suggestion.gaps|join(", ") }}</p>{% endif %}
 {% else %}
-<p class="meta">No tailoring suggestion yet — run the worker with an LLM provider configured.</p>
+<p class="meta">Not analyzed yet — run the worker to score it, or analyze it on demand.</p>
 {% endif %}
 </div>
 {% endblock %}

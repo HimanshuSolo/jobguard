@@ -45,6 +45,17 @@ class Settings(BaseSettings):
     llm_api_key: str = Field(default="", description="API key for the LLM provider.")
     llm_model: str = Field(default="", description="Model name for the LLM provider.")
     llm_max_tokens_per_run: int = Field(default=20000, ge=1)
+    llm_top_n_per_run: int = Field(
+        default=30, gt=0, description="Max postings analyzed with the LLM per run."
+    )
+    llm_cheap_score_min: float = Field(
+        default=15.0,
+        ge=0.0,
+        le=100.0,
+        description="Minimum cheap heuristic score for LLM analysis.",
+    )
+    llm_top_n_per_run: int = Field(default=30, ge=1)
+    llm_cheap_score_min: float = Field(default=15.0, ge=0.0, le=100.0)
     llm_secondary_base_url: str = ""
     llm_secondary_api_key: str = ""
     llm_secondary_model: str = ""

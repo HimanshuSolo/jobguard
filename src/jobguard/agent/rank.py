@@ -2,7 +2,7 @@
 
 Scores a posting against the owner's profile config WITHOUT an LLM call:
 skill overlap, role-type match, internship/new-grad fit, location, and
-deadline proximity. The LLM `MatchResult` is the primary score in the
+deadline proximity. The LLM combined match+suggest call carries the primary score in the
 pipeline; this rank is appended as an explained, reproducible second opinion
 and orders items when the LLM is unreachable.
 """
