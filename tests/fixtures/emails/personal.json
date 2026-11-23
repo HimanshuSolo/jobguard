@@ -1,0 +1,1 @@
+{"sender": "friend@example.com", "subject": "Dinner on Saturday?", "body_text": "Hey, are we still on for dinner on Saturday? Let me know!", "expect": null, "note": "No labeled fields and no link: not a posting, so no item at all (classification never sees it)."}
