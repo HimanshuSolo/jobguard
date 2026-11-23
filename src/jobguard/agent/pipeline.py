@@ -25,6 +25,7 @@ from jobguard.guardrails import (
     scan_injection,
     strip_hidden_text,
 )
+from jobguard.llm.cache import cache_get, cache_key, cache_put
 from jobguard.llm.client import LLMClient, LLMError
 from jobguard.llm.schemas import (
     Classification,
@@ -96,6 +97,10 @@ _RETRY_EXAMPLES: dict[str, str] = {
     '"posting_key": "k", "suggestions": [], "gaps": []}',
 }
 
+# Bump when any prompt in _SYSTEMS changes shape or meaning: cached
+# responses keyed on an older version are never served.
+PROMPT_VERSION = "v1"
+
 
 def _complete_parsed(
     client: LLMClient,
@@ -103,19 +108,43 @@ def _complete_parsed(
     *,
     system: str,
     user: str,
+    session: Session,
+    posting_id: int,
+    stage: str,
     budget: TokenBudget | None = None,
+    use_cache: bool = True,
 ) -> BaseModel:
     """One LLM call with exactly one retry; raises on persistent failure.
 
     The retry repeats the shape contract with a minimal example: most
     validation failures are models punting with ``{}`` or echoing the
     schema, and restating the exact expected shape recovers them.
+
+    With ``use_cache``, a stored response for this exact (model family,
+    prompt version, content) is served with zero network calls and zero
+    budget charge; only successfully parsed responses are stored.
     """
+    key = cache_key(client.name, PROMPT_VERSION, user)
+    if use_cache:
+        hit = cache_get(session, key)
+        if hit is not None:
+            try:
+                parsed_hit = parse_strict(model, hit)
+            except SchemaValidationError:
+                pass  # stale entry shape; fall through to a live call
+            else:
+                _audit(
+                    session,
+                    "pipeline.cache_hit",
+                    {"posting_id": posting_id, "stage": stage},
+                )
+                return parsed_hit
     response = client.complete(system=system, user=user)
     if budget is not None:
         budget.charge(system=system, user=user, response=response)
     try:
-        return parse_strict(model, response.text)
+        parsed = parse_strict(model, response.text)
+        valid_text = response.text
     except SchemaValidationError:
         example = _RETRY_EXAMPLES.get(model.__name__, "{}")
         retry_user = (
@@ -126,7 +155,17 @@ def _complete_parsed(
         retry = client.complete(system=system, user=retry_user)
         if budget is not None:
             budget.charge(system=system, user=retry_user, response=retry)
-        return parse_strict(model, retry.text)
+        parsed = parse_strict(model, retry.text)
+        valid_text = retry.text
+    if use_cache:
+        cache_put(
+            session,
+            key=key,
+            model_family=client.name,
+            prompt_version=PROMPT_VERSION,
+            response_text=valid_text,
+        )
+    return parsed
 
 
 def _audit(session: Session, event: str, detail: dict[str, Any]) -> None:
@@ -145,6 +184,7 @@ def run_pipeline(
     budget: TokenBudget | None = None,
     max_input_chars: int = 3000,
     fast_client: LLMClient | None = None,
+    use_cache: bool = True,
 ) -> PipelineResult:
     """Run the full pipeline for one stored posting. Never raises for content."""
     # --- Guardrails first: the LLM only sees cleaned, redacted text. ---
@@ -209,7 +249,11 @@ def run_pipeline(
                 Classification,
                 system=_SYSTEMS["classify"],
                 user=f"[classify]\n{redacted}",
+                session=session,
+                posting_id=posting.id,
+                stage="classify",
                 budget=budget,
+                use_cache=use_cache,
             )
         except BudgetExhausted:
             raise
@@ -238,7 +282,11 @@ def run_pipeline(
                 PostingExtraction,
                 system=_SYSTEMS["extract"],
                 user=f"[extract]\n{redacted}",
+                session=session,
+                posting_id=posting.id,
+                stage="extract",
                 budget=budget,
+                use_cache=use_cache,
             )
         except BudgetExhausted:
             raise
@@ -283,7 +331,11 @@ def run_pipeline(
                 f"Resume:\n{compact_resume(resume)}\n"
                 f"Posting: {extraction.model_dump_json()}"
             ),
+            session=session,
+            posting_id=posting.id,
+            stage="match_suggest",
             budget=budget,
+            use_cache=use_cache,
         )
     except BudgetExhausted:
         raise

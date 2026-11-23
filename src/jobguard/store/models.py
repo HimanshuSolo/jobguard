@@ -88,6 +88,22 @@ class Suggestion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class LLMCache(Base):
+    """One validated LLM response, keyed by sha256(family, version, content).
+
+    Hits make zero network calls and skip the token budget. Entries survive
+    restarts, so interrupted runs resume without duplicate calls.
+    """
+
+    __tablename__ = "llm_cache"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    model_family: Mapped[str] = mapped_column(String(256), index=True, default="")
+    prompt_version: Mapped[str] = mapped_column(String(32), default="")
+    response_text: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class PendingAction(Base):
     """Risky plan awaiting human approval. Only token *hashes* are stored."""
 

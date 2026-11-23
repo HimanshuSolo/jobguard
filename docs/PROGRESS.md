@@ -286,6 +286,14 @@ the approved canary. Diagnosis lives in `docs/PERF_REPORT.md`.
   pool consuming intake; propagation lets the pool stop and leave items
   queued (old `test_budget_exhaustion_skips` updated to
   `test_budget_exhaustion_propagates`).
+- 2.8 LLM cache + checkpoints: `llm_cache` table keyed by
+  sha256(model family, prompt version, cleaned content); only validated
+  responses stored; hits make zero calls, skip budget charge, and audit
+  `pipeline.cache_hit`. `PROMPT_VERSION` bump invalidates everything.
+  `pipe_stage` stays the checkpoint marker; reruns replay finished stages
+  from cache (no duplicates). `cache_put` commits immediately under a
+  process-wide lock — two workers serving identical content raced on
+  check-then-insert (UNIQUE failure, found by the pool tests).
 
 ### Decisions (Phase 9, so far)
 
