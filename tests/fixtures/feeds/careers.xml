@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0">
+<channel>
+<title>Example Careers Feed</title>
+<link>https://careers.example.com</link>
+<item>
+<title>Backend Developer Intern at Example Co</title>
+<link>https://careers.example.com/jobs/1</link>
+<pubDate>Mon, 23 Nov 2026 10:00:00 GMT</pubDate>
+<description>Python backend internship in Bengaluru.</description>
+</item>
+<item>
+<title>Marketing Manager at Example Co</title>
+<link>https://careers.example.com/jobs/2</link>
+<pubDate>Sun, 22 Nov 2026 10:00:00 GMT</pubDate>
+<description>Brand marketing role.</description>
+</item>
+</channel>
+</rss>
