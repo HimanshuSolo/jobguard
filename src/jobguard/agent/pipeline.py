@@ -144,6 +144,7 @@ def run_pipeline(
     session: Session,
     budget: TokenBudget | None = None,
     max_input_chars: int = 3000,
+    fast_client: LLMClient | None = None,
 ) -> PipelineResult:
     """Run the full pipeline for one stored posting. Never raises for content."""
     # --- Guardrails first: the LLM only sees cleaned, redacted text. ---
@@ -174,13 +175,16 @@ def run_pipeline(
     redacted = redact_pii(cleaned).text
     if len(redacted) > max_input_chars:
         redacted = redacted[:max_input_chars] + "\n…[input truncated]"
+    # Cheap steps run on the fast model when one is configured; the combined
+    # match+suggest step always uses the smart client. Defaults to one client.
+    cheap_client = fast_client or client
     posting.pipe_status = "analyzing"
     posting.pipe_stage = "none"
     session.commit()
 
-    # --- Steps 1+2: classify + extract, skipped when template parsers ---
-    # already produced labeled company/role/link columns. Triage only runs
-    # the LLM for what parsers could not decide.
+    # --- Steps 1+2: classify + extract, skipped when template parsers have
+    # already produced labeled company/role/link. Remaining steps use the
+    # fast client when one is configured.
     template_parsed = bool(
         (posting.company or "").strip()
         and (posting.role or "").strip()
@@ -201,7 +205,7 @@ def run_pipeline(
     else:
         try:
             classification = _complete_parsed(
-                client,
+                cheap_client,
                 Classification,
                 system=_SYSTEMS["classify"],
                 user=f"[classify]\n{redacted}",
@@ -228,7 +232,7 @@ def run_pipeline(
         classification_kind = classification.kind
         try:
             extraction = _complete_parsed(
-                client,
+                cheap_client,
                 PostingExtraction,
                 system=_SYSTEMS["extract"],
                 user=f"[extract]\n{redacted}",

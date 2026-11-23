@@ -63,7 +63,7 @@ def _run_pipeline_stage(session: Session, settings: Settings) -> None:
 
     from jobguard.agent import BudgetExhausted, TokenBudget, load_profile, run_pipeline
     from jobguard.ingestion import RETRYABLE_STATUSES, backfill_statuses, triage_posting
-    from jobguard.llm.factory import build_client
+    from jobguard.llm.factory import build_pipeline_clients
     from jobguard.resume import load_resume
     from jobguard.store import Posting
 
@@ -75,7 +75,7 @@ def _run_pipeline_stage(session: Session, settings: Settings) -> None:
             print(f"No {label} at {getattr(settings, path_attr)}; skipping pipeline stage.")
             return
     try:
-        client = build_client(settings)
+        client, fast_client, _limiter = build_pipeline_clients(settings)
     except (ValueError, RuntimeError) as exc:
         print(f"LLM client unavailable ({exc}); skipping pipeline stage.")
         return
@@ -139,6 +139,7 @@ def _run_pipeline_stage(session: Session, settings: Settings) -> None:
                 session=session,
                 budget=budget,
                 max_input_chars=settings.llm_max_input_chars,
+                fast_client=fast_client,
             )
         except BudgetExhausted:
             print("Token budget exhausted; stopping pipeline stage.")

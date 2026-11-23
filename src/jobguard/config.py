@@ -57,8 +57,10 @@ class Settings(BaseSettings):
     llm_max_input_chars: int = Field(
         default=3000, gt=0, description="Max input chars sent to the LLM per call."
     )
-    llm_top_n_per_run: int = Field(default=30, ge=1)
-    llm_cheap_score_min: float = Field(default=15.0, ge=0.0, le=100.0)
+    llm_fast_model: str = Field(
+        default="",
+        description="Cheaper model for classify/extract; empty = use llm_model.",
+    )
     llm_secondary_base_url: str = ""
     llm_secondary_api_key: str = ""
     llm_secondary_model: str = ""

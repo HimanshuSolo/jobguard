@@ -181,6 +181,51 @@ def test_fabrication_violation_blocks_suggestion() -> None:
         assert session.query(Suggestion).count() == 0
 
 
+def test_fast_client_handles_classify_and_extract() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    init_db(engine)
+    fast = FakeClient(
+        rules=[
+            ("[classify]", '{"kind": "posting", "confidence": 0.95}'),
+            (
+                "[extract]",
+                '{"company": "Acme", "role": "SDE Intern", "location": "Remote",'
+                ' "link": "", "skills": []}',
+            ),
+        ]
+    )
+    smart = FakeClient(
+        rules=[
+            (
+                "[match_suggest]",
+                '{"score": 61, "reasons": [], "resume_item_ids": ["exp-1"],'
+                ' "posting_key": "k", "suggestions": [{"kind": "reword",'
+                ' "resume_item_ids": ["exp-1"], "text": "T."}], "gaps": []}',
+            ),
+        ]
+    )
+    with Session(engine) as session:
+        post = _posting(session)
+        profile, resume = _env()
+        result = run_pipeline(
+            post,
+            body="SDE Intern at Acme",
+            sender="s",
+            client=smart,
+            fast_client=fast,
+            profile=profile,
+            resume=resume,
+            session=session,
+        )
+        assert result.status == "suggested"
+        assert result.score == 61
+        assert any("[classify]" in c["user"] for c in fast.calls)
+        assert any("[extract]" in c["user"] for c in fast.calls)
+        assert not any("[match_suggest]" in c["user"] for c in fast.calls)
+        assert any("[match_suggest]" in c["user"] for c in smart.calls)
+        assert not any("[classify]" in c["user"] for c in smart.calls)
+
+
 def test_template_parsed_skips_classify_and_extract() -> None:
     engine = create_engine("sqlite:///:memory:")
     init_db(engine)
