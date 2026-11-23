@@ -1,12 +1,24 @@
-# Company job boards (public JSON endpoints). Copy to data/boards.yaml and edit.
-# Slugs are public: Greenhouse slug = boards.greenhouse.io/<slug>,
-# Lever slug = lever.co/<slug> jobs page.
+# Company job boards (public JSON endpoints). Verified live 2026-11-23.
+# Greenhouse slug = boards.greenhouse.io/<slug>, Lever slug = jobs.lever.co/<slug>.
 boards:
   - provider: greenhouse
-    slug: example-co
-    company: Example Co
-    include_content: false
+    slug: hackerrank
+    company: HackerRank
+  - provider: greenhouse
+    slug: workato
+    company: Workato
+  - provider: greenhouse
+    slug: arcesiumllc
+    company: Arcesium
   - provider: lever
-    slug: example-labs
-    company: Example Labs
-    include_content: false
+    slug: merklescience
+    company: Merkle Science
+  - provider: lever
+    slug: hevodata
+    company: Hevo Data
+  - provider: lever
+    slug: fampay
+    company: FamPay
+  - provider: lever
+    slug: drivetrain
+    company: Drivetrain

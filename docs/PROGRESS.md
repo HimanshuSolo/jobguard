@@ -265,5 +265,9 @@ Gates 2026-11-23: ruff clean, pyright 0 errors, pytest 166 passed, eval
   links and truncating over-long spaceless tokens pre-redaction.
 - Groq free tier here: 1000 req/~3h, tight per-minute RPM; the worker is a
   guest on that budget, so backfills converge over runs rather than one shot.
+- 2026-11-23: sources expanded 1 -> 9 (7 verified boards: HackerRank,
+  Workato, Arcesium, Merkle Science, Hevo Data, FamPay, Drivetrain + WWR
+  programming RSS + Gmail). Rejected: Lever EU endpoints (payu/aidash 404),
+  RemoteOK RSS (404 from here). Boards verified live before wiring.
 
 All phases complete. Awaiting your next direction.
