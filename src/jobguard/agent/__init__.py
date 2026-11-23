@@ -8,6 +8,7 @@ from jobguard.agent.fallback import (
 )
 from jobguard.agent.pipeline import PipelineResult, PipelineStatus, run_pipeline
 from jobguard.agent.rank import Profile, RankResult, load_profile, score_posting
+from jobguard.agent.ratelimit import RateLimiter
 
 __all__ = [
     "BudgetExhausted",
@@ -17,6 +18,7 @@ __all__ = [
     "PipelineStatus",
     "Profile",
     "RankResult",
+    "RateLimiter",
     "TokenBudget",
     "load_profile",
     "run_pipeline",

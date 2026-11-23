@@ -28,7 +28,8 @@ def test_live_credentials_allowed_when_not_demo() -> None:
 
 def test_llm_throttle_defaults() -> None:
     settings = Settings()
-    assert settings.llm_call_gap_s == 3.0
+    assert settings.llm_max_requests_per_min == 20.0
+    assert settings.llm_max_tokens_per_min == 8000.0
     assert settings.llm_max_tokens_per_run == 20000
 
 

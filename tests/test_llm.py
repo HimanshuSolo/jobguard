@@ -124,6 +124,69 @@ def test_openai_compat_retries_then_succeeds() -> None:
     assert slept == [1.0, 2.0]  # exponential backoff, no real waiting
 
 
+def test_openai_compat_gates_calls_through_limiter() -> None:
+    acquired: list[int] = []
+    noted: list[float] = []
+
+    class RecordingLimiter:
+        def acquire(self, tokens: int = 0) -> None:
+            acquired.append(tokens)
+
+        def note_retry_after(self, seconds: float) -> None:
+            noted.append(seconds)
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    client = OpenAICompatClient(
+        base_url="https://api.example.com/v1",
+        api_key="k",
+        model="m",
+        limiter=RecordingLimiter(),  # type: ignore[arg-type]
+        transport=httpx.MockTransport(handler),
+    )
+    client.complete(system="hello world", user="hi there")
+    assert acquired and all(t > 0 for t in acquired)  # estimate from prompt size
+    assert noted == []
+
+
+def test_openai_compat_retry_after_reaches_limiter() -> None:
+    noted: list[float] = []
+
+    class RecordingLimiter:
+        def acquire(self, tokens: int = 0) -> None:
+            pass
+
+        def note_retry_after(self, seconds: float) -> None:
+            noted.append(seconds)
+
+    calls = {"n": 0}
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "7"}, content=b"slow")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    client = OpenAICompatClient(
+        base_url="https://api.example.com/v1",
+        api_key="k",
+        model="m",
+        max_retries=1,
+        limiter=RecordingLimiter(),  # type: ignore[arg-type]
+        transport=httpx.MockTransport(handler),
+    )
+    import jobguard.llm.openai_compat as compat
+
+    real_sleep = compat.time.sleep
+    compat.time.sleep = lambda s: None  # type: ignore[method-assign]
+    try:
+        client.complete(system="s", user="u")
+    finally:
+        compat.time.sleep = real_sleep  # type: ignore[method-assign]
+    assert noted == [7.0]
+
+
 def test_openai_compat_does_not_retry_400() -> None:
     calls = {"n": 0}
 
