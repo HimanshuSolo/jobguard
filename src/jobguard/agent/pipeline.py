@@ -16,7 +16,7 @@ import structlog
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from jobguard.agent.fallback import TokenBudget
+from jobguard.agent.fallback import BudgetExhausted, TokenBudget
 from jobguard.agent.rank import Profile, score_posting
 from jobguard.guardrails import (
     check_scam,
@@ -211,6 +211,8 @@ def run_pipeline(
                 user=f"[classify]\n{redacted}",
                 budget=budget,
             )
+        except BudgetExhausted:
+            raise
         except (LLMError, SchemaValidationError, RuntimeError) as exc:
             _audit(session, "pipeline.classify_fail", {"posting_id": posting.id})
             posting.pipe_status = "failed"
@@ -238,6 +240,8 @@ def run_pipeline(
                 user=f"[extract]\n{redacted}",
                 budget=budget,
             )
+        except BudgetExhausted:
+            raise
         except (LLMError, SchemaValidationError, RuntimeError) as exc:
             _audit(session, "pipeline.extract_fail", {"posting_id": posting.id})
             posting.pipe_status = "failed"
@@ -281,6 +285,8 @@ def run_pipeline(
             ),
             budget=budget,
         )
+    except BudgetExhausted:
+        raise
     except (LLMError, SchemaValidationError, RuntimeError) as exc:
         _audit(session, "pipeline.match_fail", {"posting_id": posting.id})
         posting.pipe_status = "failed"

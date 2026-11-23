@@ -248,6 +248,54 @@ regressions (67 cases total).
 Gates 2026-11-23: ruff clean, pyright 0 errors, pytest 166 passed, eval
 67/67 vs baseline v7.
 
+## Phase 9 — perf/fast-pipeline (in progress, STOP-LIST active)
+
+Branch `perf/fast-pipeline`, one commit per item, never push to main. No
+live LLM calls (fake/replay + fake clock); no email/digest/backfill until
+the approved canary. Diagnosis lives in `docs/PERF_REPORT.md`.
+
+- 2.1 per-item status: `pipe_status`/`pipe_stage`/`cheap_score` on
+  postings, `backfill_statuses` migration helper, `jobguard status`
+  (scored/eligible/skipped-by-reason/queued/expired/failed).
+- 2.2 local-first triage: two-phase worker — sender/label allowlist,
+  parse, dedupe, keyword prefilter, PII redaction, guardrails, expiry,
+  cheap score for ALL items with zero LLM calls and zero sleeping; LLM
+  only for the bounded selection.
+- 2.3 token-bucket limiter (`agent/ratelimit.py`, fake clock/sleeper):
+  requests/min + tokens/min from config, `note_retry_after` honors
+  provider Retry-After globally; fixed 3s sleep removed.
+- 2.4 fewer calls: template-parsed postings skip classify; extract runs
+  only when parser fields are missing; match+suggest merged into one
+  `MatchAndSuggest` call; LLM only for cheap-score >= threshold then
+  intern-first, nearest-deadline, newest, top-N (default 30).
+- 2.5 smaller prompts: cached compact resume summary (item IDs kept),
+  boilerplate collapse, `llm_max_input_chars` truncation per call.
+- 2.6 model tiering: `build_pipeline_clients` returns (smart, fast,
+  shared limiter); `LLM_FAST_MODEL` for classify/extract, smart model
+  for match+suggest; no breaker/fallback on the fast path by design.
+- 2.7 bounded pool: `_run_pool` (ThreadPoolExecutor, default 2 workers,
+  `LLM_WORKERS` 1-8) — one session per item, ids only across threads;
+  shared limiter + breaker + fallback chain inside the client stack;
+  `BudgetExhausted` re-raised through pipeline stages so a spent budget
+  stops intake (in-flight items finish, cancelled futures stay queued).
+  Retry-After honored at the client layer (`note_retry_after` + bounded
+  retries); covered by `tests/test_ratelimit.py`.
+- Contract change (item 7): `BudgetExhausted` now propagates out of
+  `run_pipeline` instead of being swallowed into "skipped"/"failed".
+  Swallowing let a spent budget masquerade as item failures and kept the
+  pool consuming intake; propagation lets the pool stop and leave items
+  queued (old `test_budget_exhaustion_skips` updated to
+  `test_budget_exhaustion_propagates`).
+
+### Decisions (Phase 9, so far)
+
+- Safest defaults: workers=2, top-N=30, cheap-score floor 15.0,
+  max input 3000 chars; leftovers stay `queued` ("not analyzed yet",
+  analyzable on demand — never counted as scored).
+- Pool creates per-item sessions from the factory; ORM objects never
+  cross threads. File-DB SQLite for pool tests (`:memory:` is
+  per-connection and invisible across threads).
+
 ### Decisions (Phase 8, so far)
 
 - System prompts show a tiny valid example + exact key list; raw schema

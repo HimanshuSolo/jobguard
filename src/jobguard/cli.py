@@ -6,9 +6,13 @@ import argparse
 import sys
 
 import structlog
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
+from jobguard.agent import TokenBudget
+from jobguard.agent.rank import Profile
 from jobguard.config import Settings, get_settings
+from jobguard.llm.client import LLMClient
+from jobguard.resume import Resume
 
 log = structlog.get_logger(__name__)
 
@@ -53,15 +57,15 @@ def _cmd_run_worker(_: argparse.Namespace) -> int:
                 f"new={result.new_postings} merged={result.merged_postings} "
                 f"filtered={result.filtered_out} seen={result.skipped_seen}"
             )
-        _run_pipeline_stage(session, settings)
+        _run_pipeline_stage(sessions, settings)
     return 0
 
 
-def _run_pipeline_stage(session: Session, settings: Settings) -> None:
+def _run_pipeline_stage(sessions: sessionmaker[Session], settings: Settings) -> None:
     """Classify/extract/match/suggest for postings lacking suggestions."""
     from pathlib import Path
 
-    from jobguard.agent import BudgetExhausted, TokenBudget, load_profile, run_pipeline
+    from jobguard.agent import TokenBudget, load_profile
     from jobguard.ingestion import RETRYABLE_STATUSES, backfill_statuses, triage_posting
     from jobguard.llm.factory import build_pipeline_clients
     from jobguard.resume import load_resume
@@ -82,70 +86,141 @@ def _run_pipeline_stage(session: Session, settings: Settings) -> None:
     profile = load_profile(str(settings.profile_path))
     resume = load_resume(str(settings.resume_path))
     budget = TokenBudget(max_tokens=settings.llm_max_tokens_per_run)
-    backfill_statuses(session)
+    with sessions() as session:
+        backfill_statuses(session)
 
-    # Phase A: local triage for everything actionable (no LLM, no sleeping).
-    # Terminal outcomes are persisted immediately and never re-processed.
-    actionable = (
-        session.query(Posting)
-        .filter(
-            Posting.pipe_status.in_(list(RETRYABLE_STATUSES) + ["analyzing"]),
-            Posting.pipe_status.is_not(None),
+        # Phase A: local triage for everything actionable (no LLM, no sleeping).
+        # Terminal outcomes are persisted immediately and never re-processed.
+        actionable = (
+            session.query(Posting)
+            .filter(
+                Posting.pipe_status.in_(list(RETRYABLE_STATUSES) + ["analyzing"]),
+                Posting.pipe_status.is_not(None),
+            )
+            .all()
         )
-        .all()
-    )
-    triaged = {"terminal": 0, "queued": 0}
-    for post in actionable:
-        verdict = triage_posting(post, profile=profile, sender=post.sender or "")
-        if verdict.status == "queued":
-            post.cheap_score = verdict.cheap_score
-            if post.pipe_status in ("analyzing", "failed"):
-                post.pipe_status = "queued"
-            triaged["queued"] += 1
-        else:
-            post.pipe_status = verdict.status
-            post.pipe_stage = "triaged"
-            triaged["terminal"] += 1
-    session.commit()
-    print(f"triage: {triaged} (local only, no LLM calls, no sleeping)")
+        triaged = {"terminal": 0, "queued": 0}
+        for post in actionable:
+            verdict = triage_posting(post, profile=profile, sender=post.sender or "")
+            if verdict.status == "queued":
+                post.cheap_score = verdict.cheap_score
+                if post.pipe_status in ("analyzing", "failed"):
+                    post.pipe_status = "queued"
+                triaged["queued"] += 1
+            else:
+                post.pipe_status = verdict.status
+                post.pipe_stage = "triaged"
+                triaged["terminal"] += 1
+        session.commit()
+        print(f"triage: {triaged} (local only, no LLM calls, no sleeping)")
 
     # Phase B: LLM loop over the bounded selection (threshold + top-N).
     # Everything else stays queued with its cheap score, explicitly
     # "not analyzed yet", and can be analyzed on demand later.
     from jobguard.ingestion import select_for_llm
 
-    queued = (
-        session.query(Posting).filter(Posting.pipe_status == "queued").order_by(Posting.id).all()
-    )
-    pending = select_for_llm(
-        queued,
-        top_n=settings.llm_top_n_per_run,
-        min_cheap_score=settings.llm_cheap_score_min,
-    )
+    with sessions() as session:
+        queued = (
+            session.query(Posting)
+            .filter(Posting.pipe_status == "queued")
+            .order_by(Posting.id)
+            .all()
+        )
+        pending = select_for_llm(
+            queued,
+            top_n=settings.llm_top_n_per_run,
+            min_cheap_score=settings.llm_cheap_score_min,
+        )
+        pending_ids = [p.id for p in pending]
+        queued_count = len(queued)
     print(
-        f"selected {len(pending)}/{len(queued)} for LLM "
+        f"selected {len(pending_ids)}/{queued_count} for LLM "
         f"(top_n={settings.llm_top_n_per_run}, min_score={settings.llm_cheap_score_min})"
     )
-    counts: dict[str, int] = {}
-    for post in pending:
-        try:
-            result = run_pipeline(
-                post,
-                body=post.body or "\n".join([post.role, post.company, post.location]),
-                sender=post.sender or "",
-                client=client,
-                profile=profile,
-                resume=resume,
-                session=session,
-                budget=budget,
-                max_input_chars=settings.llm_max_input_chars,
-                fast_client=fast_client,
-            )
-        except BudgetExhausted:
-            print("Token budget exhausted; stopping pipeline stage.")
-            break
-        counts[result.status] = counts.get(result.status, 0) + 1
+    counts = _run_pool(
+        session_factory=sessions,
+        posting_ids=pending_ids,
+        client=client,
+        fast_client=fast_client,
+        profile=profile,
+        resume=resume,
+        budget=budget,
+        max_input_chars=settings.llm_max_input_chars,
+        max_workers=settings.llm_workers,
+    )
     print(f"pipeline: {counts or 'nothing pending'} (tokens used: {budget.used_tokens})")
+
+
+def _run_pool(
+    *,
+    session_factory: sessionmaker[Session],
+    posting_ids: list[int],
+    client: LLMClient,
+    fast_client: LLMClient,
+    profile: Profile,
+    resume: Resume,
+    budget: TokenBudget,
+    max_input_chars: int,
+    max_workers: int,
+) -> dict[str, int]:
+    """Bounded worker pool: one DB session per item, shared throttled clients.
+
+    Threads never share sessions or ORM objects (only ids cross the
+    boundary); the limiter, budget, and circuit breaker are thread-safe.
+    A BudgetExhausted run stops intake while in-flight items finish.
+    """
+    from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
+
+    from jobguard.agent import BudgetExhausted
+    from jobguard.agent import run_pipeline as _run_pipeline
+    from jobguard.store import Posting
+
+    counts: dict[str, int] = {}
+    stopped = False
+
+    def _one(posting_id: int) -> str:
+        with session_factory() as session:
+            post = session.get(Posting, posting_id)
+            if post is None or post.pipe_status != "queued":
+                return "skipped-stale"
+            try:
+                result = _run_pipeline(
+                    post,
+                    body=post.body or "\n".join([post.role, post.company, post.location]),
+                    sender=post.sender or "",
+                    client=client,
+                    profile=profile,
+                    resume=resume,
+                    session=session,
+                    budget=budget,
+                    max_input_chars=max_input_chars,
+                    fast_client=fast_client,
+                )
+            except BudgetExhausted:
+                return "budget-exhausted"
+            return result.status
+
+    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
+        futures = {pool.submit(_one, pid): pid for pid in posting_ids}
+        try:
+            for future in as_completed(futures):
+                try:
+                    status = future.result()
+                except CancelledError:
+                    continue  # never started; item stays queued for next run
+                if status == "budget-exhausted":
+                    stopped = True
+                    for other in futures:
+                        other.cancel()
+                    continue
+                counts[status] = counts.get(status, 0) + 1
+        finally:
+            if stopped:
+                for other in futures:
+                    other.cancel()
+    if stopped:
+        print("Token budget exhausted; stopping pipeline stage.")
+    return counts
 
 
 def _cmd_build_digest(args: argparse.Namespace) -> int:

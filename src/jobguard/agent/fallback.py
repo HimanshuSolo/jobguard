@@ -8,6 +8,7 @@ failing. All three are deterministic and unit-tested with fakes.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -41,28 +42,36 @@ class BudgetExhausted(RuntimeError):
     """Raised when the per-run token budget would be exceeded."""
 
 
-@dataclass
+@dataclass(eq=False)
 class TokenBudget:
-    """Cap estimated token spend per worker run (free-tier protection)."""
+    """Cap estimated token spend per worker run (free-tier protection).
+
+    Thread-safe: the worker pool charges from multiple threads.
+    """
 
     max_tokens: int
     used_tokens: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def charge(self, *, system: str, user: str, response: LLMResponse) -> None:
         """Account one call; estimates when the provider reports no usage."""
         reported = response.input_tokens + response.output_tokens
         estimate = (len(system) + len(user) + len(response.text)) // 4
         cost = reported if reported > 0 else estimate
-        if self.used_tokens + cost > self.max_tokens:
-            raise BudgetExhausted(
-                f"token budget {self.max_tokens} exceeded (used {self.used_tokens})"
-            )
-        self.used_tokens += cost
+        with self._lock:
+            if self.used_tokens + cost > self.max_tokens:
+                raise BudgetExhausted(
+                    f"token budget {self.max_tokens} exceeded (used {self.used_tokens})"
+                )
+            self.used_tokens += cost
 
 
-@dataclass
+@dataclass(eq=False)
 class CircuitBreaker:
-    """Open the circuit after N consecutive failures; fail fast while open."""
+    """Open the circuit after N consecutive failures; fail fast while open.
+
+    Thread-safe: counters are guarded for the worker pool.
+    """
 
     inner: LLMClient
     threshold: int = 3
@@ -70,6 +79,7 @@ class CircuitBreaker:
     failures: int = 0
     opened_at: float | None = None
     _clock: Callable[[], float] = field(default=time.monotonic, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def name(self) -> str:
@@ -78,13 +88,14 @@ class CircuitBreaker:
     @property
     def is_open(self) -> bool:
         """True while the circuit is open (cooling down after failures)."""
-        if self.opened_at is None:
-            return False
-        if self._clock() - self.opened_at >= self.cooldown_s:
-            self.opened_at = None
-            self.failures = 0
-            return False
-        return True
+        with self._lock:
+            if self.opened_at is None:
+                return False
+            if self._clock() - self.opened_at >= self.cooldown_s:
+                self.opened_at = None
+                self.failures = 0
+                return False
+            return True
 
     def complete(self, *, system: str, user: str) -> LLMResponse:
         if self.is_open:
@@ -92,9 +103,11 @@ class CircuitBreaker:
         try:
             response = self.inner.complete(system=system, user=user)
         except LLMError:
-            self.failures += 1
-            if self.failures >= self.threshold:
-                self.opened_at = self._clock()
+            with self._lock:
+                self.failures += 1
+                if self.failures >= self.threshold:
+                    self.opened_at = self._clock()
             raise
-        self.failures = 0
+        with self._lock:
+            self.failures = 0
         return response

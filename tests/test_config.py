@@ -33,6 +33,7 @@ def test_llm_throttle_defaults() -> None:
     assert settings.llm_max_tokens_per_run == 20000
     assert settings.llm_top_n_per_run == 30
     assert settings.llm_cheap_score_min == 15.0
+    assert settings.llm_workers == 2
 
 
 def test_env_override(monkeypatch: pytest.MonkeyPatch) -> None:

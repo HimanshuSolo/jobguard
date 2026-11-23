@@ -54,6 +54,9 @@ class Settings(BaseSettings):
         le=100.0,
         description="Minimum cheap heuristic score for LLM analysis.",
     )
+    llm_workers: int = Field(
+        default=2, gt=0, le=8, description="Worker pool size for the LLM stage."
+    )
     llm_max_input_chars: int = Field(
         default=3000, gt=0, description="Max input chars sent to the LLM per call."
     )

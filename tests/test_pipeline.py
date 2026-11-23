@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from jobguard.agent import Profile, TokenBudget, run_pipeline
+from jobguard.agent.fallback import BudgetExhausted
 from jobguard.llm.fake import FakeClient
 from jobguard.resume import Resume, ResumeItem
 from jobguard.store import Posting, Suggestion, init_db
@@ -260,20 +262,21 @@ def test_template_parsed_skips_classify_and_extract() -> None:
         assert "[match_suggest]" in markers[0]
 
 
-def test_budget_exhaustion_skips() -> None:
+def test_budget_exhaustion_propagates() -> None:
+    """BudgetExhausted escapes run_pipeline so the pool stops new intake."""
     engine = create_engine("sqlite:///:memory:")
     init_db(engine)
     with Session(engine) as session:
         post = _posting(session)
         profile, resume = _env()
-        result = run_pipeline(
-            post,
-            body="SDE Intern at Acme",
-            sender="s",
-            client=_client(),
-            profile=profile,
-            resume=resume,
-            session=session,
-            budget=TokenBudget(max_tokens=1),
-        )
-        assert result.status == "skipped"
+        with pytest.raises(BudgetExhausted):
+            run_pipeline(
+                post,
+                body="SDE Intern at Acme",
+                sender="s",
+                client=_client(),
+                profile=profile,
+                resume=resume,
+                session=session,
+                budget=TokenBudget(max_tokens=1),
+            )
