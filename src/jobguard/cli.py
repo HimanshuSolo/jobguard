@@ -63,9 +63,10 @@ def _run_pipeline_stage(session: Session, settings: Settings) -> None:
     from pathlib import Path
 
     from jobguard.agent import BudgetExhausted, TokenBudget, load_profile, run_pipeline
+    from jobguard.ingestion import RETRYABLE_STATUSES, backfill_statuses, triage_posting
     from jobguard.llm.factory import build_client
     from jobguard.resume import load_resume
-    from jobguard.store import Posting, Suggestion
+    from jobguard.store import Posting
 
     if settings.llm_provider.lower() == "fake":
         print("LLM provider is 'fake'; skipping pipeline stage (set LLM_PROVIDER).")
@@ -82,15 +83,41 @@ def _run_pipeline_stage(session: Session, settings: Settings) -> None:
     profile = load_profile(str(settings.profile_path))
     resume = load_resume(str(settings.resume_path))
     budget = TokenBudget(max_tokens=settings.llm_max_tokens_per_run)
-    done_ids = {row[0] for row in session.query(Suggestion.posting_id).all()}
-    pending = session.query(Posting).filter(Posting.scam_flag.is_(False)).all()
-    # Internships first: quota is scarce, so spend it on what the owner wants.
+    backfill_statuses(session)
+
+    # Phase A: local triage for everything actionable (no LLM, no sleeping).
+    # Terminal outcomes are persisted immediately and never re-processed.
+    actionable = (
+        session.query(Posting)
+        .filter(
+            Posting.pipe_status.in_(list(RETRYABLE_STATUSES) + ["analyzing"]),
+            Posting.pipe_status.is_not(None),
+        )
+        .all()
+    )
+    triaged = {"terminal": 0, "queued": 0}
+    for post in actionable:
+        verdict = triage_posting(post, profile=profile, sender=post.sender or "")
+        if verdict.status == "queued":
+            post.cheap_score = verdict.cheap_score
+            if post.pipe_status in ("analyzing", "failed"):
+                post.pipe_status = "queued"
+            triaged["queued"] += 1
+        else:
+            post.pipe_status = verdict.status
+            post.pipe_stage = "triaged"
+            triaged["terminal"] += 1
+    session.commit()
+    print(f"triage: {triaged} (local only, no LLM calls, no sleeping)")
+
+    # Phase B: LLM loop over triage survivors, internships first.
+    pending = (
+        session.query(Posting).filter(Posting.pipe_status == "queued").order_by(Posting.id).all()
+    )
     pending.sort(key=lambda p: (0 if "intern" in (p.role or "").casefold() else 1, p.id))
     counts: dict[str, int] = {}
     first = True
     for post in pending:
-        if post.id in done_ids:
-            continue
         # Politeness gap: free-tier providers rate-limit bursts; the retry
         # path handles the occasional 429, the gap prevents the storm.
         if not first:
