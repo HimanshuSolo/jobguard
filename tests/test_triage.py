@@ -62,29 +62,63 @@ def test_triage_expires_past_deadline() -> None:
 
 
 def test_select_for_llm_threshold_topn_and_order() -> None:
+    from datetime import datetime
+
     from jobguard.ingestion import select_for_llm
 
-    def _p(role: str, score: float, key: str) -> Posting:
-        post = _post(role=role, key=key)
+    now = datetime.now(UTC)
+    seq = 0
+
+    def _p(
+        role: str,
+        score: float,
+        key: str,
+        deadline: datetime | None = None,
+    ) -> Posting:
+        nonlocal seq
+        seq += 1
+        post = _post(role=role, key=key, deadline=deadline)
         post.cheap_score = score
+        post.id = seq  # oldest id = 1, newest = highest
         return post
 
     posts = [
-        _p("Marketing Manager", 90.0, "a"),  # high score, not intern
-        _p("SDE Intern", 20.0, "b"),  # intern, above threshold
-        _p("Backend Intern", 80.0, "c"),  # intern, highest
-        _p("Data Entry", 50.0, "d"),  # below threshold? no: 50 >= 15, kept
-        _p("Clerk", 5.0, "e"),  # below threshold -> dropped
+        _p("Marketing Manager", 90.0, "a"),  # high score, not intern, no deadline
+        _p("SDE Intern", 20.0, "b", now + timedelta(days=9)),  # intern, later deadline
+        _p(
+            "Backend Intern",
+            80.0,
+            "c",
+            now + timedelta(days=2),
+        ),  # intern, nearest deadline
+        _p("Data Entry", 50.0, "d", now + timedelta(days=1)),  # not intern, soonest
+        _p("Frontend Intern", 60.0, "e"),  # intern, no deadline: after dated interns
+        _p("Clerk", 5.0, "f"),  # below threshold -> dropped
     ]
-    picked = select_for_llm(posts, top_n=3, min_cheap_score=15.0)
+    picked = select_for_llm(posts, top_n=5, min_cheap_score=15.0)
     assert [p.role for p in picked] == [
-        "Backend Intern",
-        "SDE Intern",
-        "Marketing Manager",
+        "Backend Intern",  # intern + nearest deadline
+        "SDE Intern",  # intern + later deadline
+        "Frontend Intern",  # intern, no deadline sorts after dated interns
+        "Data Entry",  # not intern, but has the nearest deadline overall
+        "Marketing Manager",  # not intern, no deadline, newest of the dateless
     ]
-    assert all(p.cheap_score >= 15.0 for p in picked)
+    assert all((p.cheap_score or 0.0) >= 15.0 for p in picked)
     assert select_for_llm(posts, top_n=0, min_cheap_score=0) == []
     assert select_for_llm([], top_n=10, min_cheap_score=0) == []
+
+
+def test_select_for_llm_newest_first_on_ties() -> None:
+    from jobguard.ingestion import select_for_llm
+
+    first = _post(role="SDE Intern", key="x")
+    first.cheap_score = 50.0
+    first.id = 7
+    second = _post(role="SDE Intern", key="y")
+    second.cheap_score = 50.0
+    second.id = 9
+    picked = select_for_llm([first, second], top_n=2, min_cheap_score=0)
+    assert [p.id for p in picked] == [9, 7]
 
 
 def test_triage_is_deterministic_and_fast() -> None:

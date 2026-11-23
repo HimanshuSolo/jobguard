@@ -165,10 +165,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "board.html", postings=postings, status=status, hide_scam=hide_scam, intern=intern, q=q
         )
 
-    @app.get("/postings/{posting_id}", response_class=HTMLResponse)
-    def posting_detail(request: Request, posting_id: int) -> object:
-        if (redirect := need_login(request)) is not None:
-            return redirect
+    def render_detail(posting_id: int, notice: str, csrf_token: str) -> HTMLResponse:
         from jobguard.resume import keyword_gap, load_resume
 
         with sessions() as session:
@@ -190,8 +187,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resume = Resume(owner="", headline="")
         matched, missing = keyword_gap(f"{role}\n{company}\n{body}", resume)
         return _render(
-            "detail.html", posting=post, suggestion=suggestion, matched=matched, missing=missing
+            "detail.html",
+            posting=post,
+            suggestion=suggestion,
+            matched=matched,
+            missing=missing,
+            notice=notice,
+            csrf=csrf_token,
         )
+
+    @app.get("/postings/{posting_id}", response_class=HTMLResponse)
+    def posting_detail(request: Request, posting_id: int) -> object:
+        if (redirect := need_login(request)) is not None:
+            return redirect
+        return render_detail(posting_id, "", request.cookies.get(CSRF_COOKIE, ""))
+
+    @app.post("/postings/{posting_id}/analyze", response_class=HTMLResponse)
+    def analyze_now(request: Request, posting_id: int, csrf: str = Form("")) -> object:
+        if (redirect := need_login(request)) is not None:
+            return redirect
+        if not csrf_ok(request, csrf):
+            return _render("result.html", title="Rejected", message="CSRF check failed.")
+        from jobguard.agent.analyze import analyze_posting
+
+        result = analyze_posting(posting_id, sessions=sessions, settings=settings)
+        notice = (
+            f"Analyze: {result.outcome} (status={result.status or '-'}; "
+            f"{result.detail}; llm_calls={result.llm_calls})."
+        )
+        return render_detail(posting_id, notice, request.cookies.get(CSRF_COOKIE, ""))
 
     @app.get("/approvals", response_class=HTMLResponse)
     def approvals(request: Request) -> object:

@@ -78,6 +78,24 @@ def test_detail_shows_tailoring(client: TestClient) -> None:
     detail = client.get("/postings/1")
     assert "Emphasize the FastAPI dashboard" in detail.text
     assert "Gaps: Go" in detail.text
+    assert "Analyze now" in detail.text
+
+
+def test_analyze_button_reports_outcome(client: TestClient) -> None:
+    _login(client)
+    csrf = client.cookies.get(CSRF_COOKIE, "")
+    assert csrf
+    resp = client.post("/postings/1/analyze", data={"csrf": csrf})
+    assert resp.status_code == 200
+    # Demo settings use the fake provider, so analysis is refused — the
+    # wiring (auth + CSRF + outcome notice) is what this asserts.
+    assert "Analyze: refused" in resp.text
+
+
+def test_analyze_csrf_enforced(client: TestClient) -> None:
+    _login(client)
+    resp = client.post("/postings/1/analyze", data={"csrf": "wrong"})
+    assert "CSRF check failed" in resp.text
 
 
 def test_security_headers(client: TestClient) -> None:

@@ -294,6 +294,15 @@ the approved canary. Diagnosis lives in `docs/PERF_REPORT.md`.
   from cache (no duplicates). `cache_put` commits immediately under a
   process-wide lock — two workers serving identical content raced on
   check-then-insert (UNIQUE failure, found by the pool tests).
+- 2.9 priority/expiry/on-demand: `select_for_llm` order is now
+  intern-first, nearest upcoming deadline (deadline-less last), newest;
+  cheap score stays the eligibility gate, not the order. Expiry needs no
+  LLM and was already terminal in triage (re-triaged every run, so
+  deadlines that pass while queued are caught). On-demand
+  `agent/analyze.py` core (local triage, then one `run_pipeline`, refused
+  on fake/missing files/terminal-without-force) backs `jobguard analyze
+  --id ... [--force]` and the dashboard Analyze button
+  (POST + CSRF, outcome notice on the detail page).
 
 ### Decisions (Phase 9, so far)
 

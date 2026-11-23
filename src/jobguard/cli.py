@@ -309,6 +309,25 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_analyze(args: argparse.Namespace) -> int:
+    """Analyze specific postings on demand (local triage first, then LLM)."""
+    from jobguard.agent.analyze import analyze_posting
+    from jobguard.store import get_engine, init_db, session_factory
+
+    settings = get_settings()
+    engine = get_engine(settings.database_url)
+    init_db(engine)
+    sessions = session_factory(engine)
+    for posting_id in args.id:
+        result = analyze_posting(posting_id, sessions=sessions, settings=settings, force=args.force)
+        print(
+            f"posting {result.posting_id}: {result.outcome} "
+            f"(status={result.status or '-'}; {result.detail}; "
+            f"llm_calls={result.llm_calls})"
+        )
+    return 0
+
+
 def _cmd_status(_: argparse.Namespace) -> int:
     from jobguard.ingestion import summarize
     from jobguard.store import get_engine, init_db, session_factory
@@ -425,6 +444,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_status = sub.add_parser("status", help="Honest pipeline progress report.")
     p_status.set_defaults(func=_cmd_status)
+
+    p_analyze = sub.add_parser(
+        "analyze", help="Analyze specific postings on demand (triage, then LLM)."
+    )
+    p_analyze.add_argument("--id", type=int, action="append", required=True)
+    p_analyze.add_argument("--force", action="store_true", help="Re-run terminal items too.")
+    p_analyze.set_defaults(func=_cmd_analyze)
 
     p_digest = sub.add_parser("build-digest", help="Build and send a digest email.")
     p_digest.add_argument("--kind", choices=["morning", "evening", "urgent"], default="morning")

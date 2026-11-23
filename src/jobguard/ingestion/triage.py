@@ -2,9 +2,10 @@
 
 Triage runs every non-LLM stage for one posting (no network, no sleep).
 `select_for_llm` then picks the bounded set the LLM may spend budget on:
-cheap score at/above threshold, internships first, then highest cheap
-score, capped at top-N. Everything else stays queued with its cheap score
-recorded, explicitly "not analyzed yet".
+cheap score at/above threshold, internships first, then nearest upcoming
+deadline (deadline-less last), then newest, capped at top-N. Everything
+else stays queued with its cheap score recorded, explicitly
+"not analyzed yet".
 """
 
 from __future__ import annotations
@@ -70,17 +71,26 @@ def triage_posting(post: Posting, *, profile: Profile, sender: str = "") -> Tria
     return TriageResult(status="queued", cheap_score=rank.score, reasons=list(rank.reasons))
 
 
+def _deadline_ts(post: Posting) -> float:
+    """Deadline as a UTC timestamp; deadline-less postings sort last."""
+    if post.deadline is None:
+        return float("inf")
+    aware = post.deadline if post.deadline.tzinfo else post.deadline.replace(tzinfo=UTC)
+    return aware.timestamp()
+
+
 def select_for_llm(
     posts: Sequence[Posting], *, top_n: int, min_cheap_score: float
 ) -> list[Posting]:
     """Bound the LLM spend: above-threshold items, internships first, then
-    highest cheap score, capped at top_n. The rest stay queued."""
+    nearest upcoming deadline, then newest, capped at top_n. The rest stay
+    queued. Cheap score is only the eligibility gate, not the order."""
     eligible = [p for p in posts if (p.cheap_score or 0.0) >= min_cheap_score]
     eligible.sort(
         key=lambda p: (
             0 if "intern" in (p.role or "").casefold() else 1,
-            -(p.cheap_score or 0.0),
-            p.id,
+            _deadline_ts(p),
+            -(p.id or 0),
         )
     )
     return eligible[: max(top_n, 0)]
