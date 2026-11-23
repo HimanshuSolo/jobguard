@@ -55,9 +55,14 @@ def test_openai_compat_parses_response() -> None:
     assert resp.output_tokens == 5
 
 
-def test_openai_compat_http_error_raises() -> None:
-    def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, json={"error": "boom"})
+def test_openai_compat_sends_temperature_and_json_mode() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        seen.update(_json.loads(request.content.decode()))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
 
     client = OpenAICompatClient(
         base_url="https://api.example.com/v1",
@@ -65,8 +70,77 @@ def test_openai_compat_http_error_raises() -> None:
         model="m",
         transport=httpx.MockTransport(handler),
     )
+    client.complete(system="s", user="u")
+    assert seen["temperature"] == 0.0  # deterministic extraction, not sampling
+    assert seen["response_format"] == {"type": "json_object"}
+
+
+def test_openai_compat_http_error_raises() -> None:
+    calls = {"n": 0}
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(500, json={"error": "boom"})
+
+    client = OpenAICompatClient(
+        base_url="https://api.example.com/v1",
+        api_key="k",
+        model="m",
+        max_retries=0,  # no sleeping in tests
+        transport=httpx.MockTransport(handler),
+    )
     with pytest.raises(LLMError):
         client.complete(system="s", user="u")
+    assert calls["n"] == 1
+
+
+def test_openai_compat_retries_then_succeeds() -> None:
+    calls = {"n": 0}
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return httpx.Response(429, content=b"slow down")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    client = OpenAICompatClient(
+        base_url="https://api.example.com/v1",
+        api_key="k",
+        model="m",
+        max_retries=5,
+        transport=httpx.MockTransport(handler),
+    )
+    import jobguard.llm.openai_compat as compat
+
+    slept: list[float] = []
+    real_sleep = compat.time.sleep
+    compat.time.sleep = slept.append  # type: ignore[method-assign]
+    try:
+        resp = client.complete(system="s", user="u")
+    finally:
+        compat.time.sleep = real_sleep  # type: ignore[method-assign]
+    assert resp.text == "{}"
+    assert calls["n"] == 3
+    assert slept == [1.0, 2.0]  # exponential backoff, no real waiting
+
+
+def test_openai_compat_does_not_retry_400() -> None:
+    calls = {"n": 0}
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(400, content=b"bad request")
+
+    client = OpenAICompatClient(
+        base_url="https://api.example.com/v1",
+        api_key="k",
+        model="m",
+        max_retries=3,
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(LLMError, match="HTTP 400"):
+        client.complete(system="s", user="u")
+    assert calls["n"] == 1  # request errors are not worth repeating
 
 
 def test_openai_compat_requires_base_url_and_model() -> None:
