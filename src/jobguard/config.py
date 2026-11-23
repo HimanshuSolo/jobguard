@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     llm_api_key: str = Field(default="", description="API key for the LLM provider.")
     llm_model: str = Field(default="", description="Model name for the LLM provider.")
     llm_max_tokens_per_run: int = Field(default=20000, ge=1)
+    llm_max_requests_per_run: int = Field(
+        default=100, gt=0, le=10000, description="Max LLM calls per worker run."
+    )
     llm_top_n_per_run: int = Field(
         default=30, gt=0, description="Max postings analyzed with the LLM per run."
     )

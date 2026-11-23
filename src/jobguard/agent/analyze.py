@@ -12,7 +12,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from jobguard.agent import TokenBudget, load_profile, run_pipeline
+from jobguard.agent import BudgetExhausted, TokenBudget, load_profile, run_pipeline
 from jobguard.config import Settings
 from jobguard.ingestion import triage_posting
 from jobguard.llm.client import LLMClient, LLMResponse
@@ -72,7 +72,10 @@ def analyze_posting(
         return AnalyzeResult(posting_id, "refused", "", f"LLM client unavailable: {exc}")
     profile = load_profile(str(settings.profile_path))
     resume = load_resume(str(settings.resume_path))
-    budget = TokenBudget(max_tokens=settings.llm_max_tokens_per_run)
+    budget = TokenBudget(
+        max_tokens=settings.llm_max_tokens_per_run,
+        max_requests=settings.llm_max_requests_per_run,
+    )
 
     with sessions() as session:
         post = session.get(Posting, posting_id)
@@ -109,6 +112,9 @@ def analyze_posting(
                 budget=budget,
                 max_input_chars=settings.llm_max_input_chars,
             )
+        except BudgetExhausted as exc:
+            session.rollback()
+            return AnalyzeResult(posting_id, "refused", "", f"Run budget exhausted: {exc}")
         except Exception as exc:  # never raise for content/infra problems
             session.rollback()
             return AnalyzeResult(posting_id, "refused", "", f"Pipeline error: {exc}")

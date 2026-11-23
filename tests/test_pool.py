@@ -169,6 +169,38 @@ def test_pool_skips_stale_items(sessions) -> None:  # type: ignore[no-untyped-de
     assert counts == {"skipped-stale": 2}
 
 
+def test_pool_request_budget_stops_gracefully(sessions, capsys) -> None:  # type: ignore[no-untyped-def]
+    """Request cap stops intake; the rest stay queued; the stop is reported."""
+    profile, resume = _env()
+    ids = _queue(sessions, 3)
+    with sessions() as session:  # distinct links -> distinct match content
+        for i, pid in enumerate(ids):
+            post = session.get(Posting, pid)
+            assert post is not None
+            post.link = f"https://acme.example/j/{i}"
+        session.commit()
+    counts = _run_pool(
+        session_factory=sessions,
+        posting_ids=ids,
+        client=_client(),
+        fast_client=_client(),
+        profile=profile,
+        resume=resume,
+        budget=TokenBudget(max_tokens=100_000, max_requests=1),
+        max_input_chars=3000,
+        max_workers=1,  # deterministic: strictly serial intake
+    )
+    assert counts == {"suggested": 1}
+    assert "request budget" in capsys.readouterr().out
+    with sessions() as session:
+        statuses = [session.get(Posting, pid).pipe_status for pid in ids]  # type: ignore[union-attr]
+        assert statuses[0] == "done"
+        # The rest never finish: still queued, or left "analyzing" when the
+        # worker picked them up just as the budget ran out (both are
+        # retryable; the next run re-triages "analyzing" back to queued).
+        assert all(s in ("queued", "analyzing") for s in statuses[1:])
+
+
 def test_pool_budget_exhausted_stops_gracefully(sessions) -> None:  # type: ignore[no-untyped-def]
     profile, resume = _env()
     ids = _queue(sessions, 3)

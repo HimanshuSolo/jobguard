@@ -44,13 +44,16 @@ class BudgetExhausted(RuntimeError):
 
 @dataclass(eq=False)
 class TokenBudget:
-    """Cap estimated token spend per worker run (free-tier protection).
+    """Cap estimated token spend AND request count per worker run.
 
-    Thread-safe: the worker pool charges from multiple threads.
+    Thread-safe: the worker pool charges from multiple threads. Cache hits
+    never reach charge(), so free replays consume neither budget.
     """
 
     max_tokens: int
+    max_requests: int | None = None
     used_tokens: int = 0
+    used_requests: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def charge(self, *, system: str, user: str, response: LLMResponse) -> None:
@@ -59,10 +62,15 @@ class TokenBudget:
         estimate = (len(system) + len(user) + len(response.text)) // 4
         cost = reported if reported > 0 else estimate
         with self._lock:
+            if self.max_requests is not None and self.used_requests + 1 > self.max_requests:
+                raise BudgetExhausted(
+                    f"request budget {self.max_requests} exceeded (used {self.used_requests})"
+                )
             if self.used_tokens + cost > self.max_tokens:
                 raise BudgetExhausted(
                     f"token budget {self.max_tokens} exceeded (used {self.used_tokens})"
                 )
+            self.used_requests += 1
             self.used_tokens += cost
 
 

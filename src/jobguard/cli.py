@@ -85,7 +85,10 @@ def _run_pipeline_stage(sessions: sessionmaker[Session], settings: Settings) -> 
         return
     profile = load_profile(str(settings.profile_path))
     resume = load_resume(str(settings.resume_path))
-    budget = TokenBudget(max_tokens=settings.llm_max_tokens_per_run)
+    budget = TokenBudget(
+        max_tokens=settings.llm_max_tokens_per_run,
+        max_requests=settings.llm_max_requests_per_run,
+    )
     with sessions() as session:
         backfill_statuses(session)
 
@@ -177,8 +180,10 @@ def _run_pool(
 
     counts: dict[str, int] = {}
     stopped = False
+    stop_reason = ""
 
     def _one(posting_id: int) -> str:
+        nonlocal stop_reason
         with session_factory() as session:
             post = session.get(Posting, posting_id)
             if post is None or post.pipe_status != "queued":
@@ -196,7 +201,8 @@ def _run_pool(
                     max_input_chars=max_input_chars,
                     fast_client=fast_client,
                 )
-            except BudgetExhausted:
+            except BudgetExhausted as exc:
+                stop_reason = str(exc)
                 return "budget-exhausted"
             return result.status
 
@@ -219,7 +225,7 @@ def _run_pool(
                 for other in futures:
                     other.cancel()
     if stopped:
-        print("Token budget exhausted; stopping pipeline stage.")
+        print(f"Run budget exhausted ({stop_reason}); stopping pipeline stage.")
     return counts
 
 

@@ -303,6 +303,13 @@ the approved canary. Diagnosis lives in `docs/PERF_REPORT.md`.
   on fake/missing files/terminal-without-force) backs `jobguard analyze
   --id ... [--force]` and the dashboard Analyze button
   (POST + CSRF, outcome notice on the detail page).
+- 2.10 per-run budgets: `TokenBudget` now caps requests as well as
+  tokens (`llm_max_requests_per_run`, default 100); both enforced in
+  `charge()`, i.e. only on real LLM calls — cache hits consume neither.
+  A spent budget raises `BudgetExhausted`, the pool stops intake
+  (in-flight items finish, the rest stay queued/retryable), and the run
+  reports which budget hit. On-demand analyze maps it to
+  "Run budget exhausted".
 
 ### Decisions (Phase 9, so far)
 
