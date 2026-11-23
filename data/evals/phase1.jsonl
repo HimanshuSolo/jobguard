@@ -1,0 +1,10 @@
+{"id": "pol-01", "category": "policy", "task": "policy_decision", "input": {"tool": "send_email", "recipient": "{{OWNER_EMAIL}}", "owner_email": "{{OWNER_EMAIL}}", "within_rate_limits": true}, "expected": {"decision": "allow"}}
+{"id": "pol-02", "category": "policy", "task": "policy_decision", "input": {"tool": "send_email", "recipient": "attacker@evil.example", "owner_email": "{{OWNER_EMAIL}}", "within_rate_limits": true}, "expected": {"decision": "deny"}}
+{"id": "pol-03", "category": "policy", "task": "policy_decision", "input": {"tool": "submit_application"}, "expected": {"decision": "deny"}}
+{"id": "pol-04", "category": "policy", "task": "policy_decision", "input": {"tool": "update_master_resume"}, "expected": {"decision": "needs_approval"}}
+{"id": "pol-05", "category": "policy", "task": "policy_decision", "input": {"tool": "fetch_job_url", "domain_allowlisted": false, "ssrf_checks_passed": false}, "expected": {"decision": "deny"}}
+{"id": "sch-01", "category": "schema", "task": "schema_parse", "input": {"schema": "Classification", "payload": {"kind": "posting", "confidence": 0.9, "reason": "lists role, company and apply link"}}, "expected": {"valid": true}}
+{"id": "sch-02", "category": "schema", "task": "schema_parse", "input": {"schema": "PostingExtraction", "payload": {"role": "SDE Intern", "location": "Remote"}}, "expected": {"valid": false}}
+{"id": "sch-03", "category": "schema", "task": "schema_parse", "input": {"schema": "TailoringCard", "payload": {"posting_key": "acme-sde-intern", "suggestions": [{"kind": "gap", "resume_item_ids": [], "text": "Requires Go; resume has no Go experience"}], "gaps": ["Go"]}}, "expected": {"valid": true}}
+{"id": "rpl-01", "category": "replay", "task": "replay_determinism", "input": {"system": "classify", "user": "SDE Intern at Acme", "response": "{\"kind\": \"posting\"}"}, "expected": {"replayed_text": "{\"kind\": \"posting\"}"}}
+{"id": "cfg-01", "category": "config", "task": "demo_mode_guard", "input": {"demo_mode": true}, "expected": {"raises": true}}
