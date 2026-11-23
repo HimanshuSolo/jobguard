@@ -18,7 +18,13 @@ from sqlalchemy.orm import Session
 
 from jobguard.agent.fallback import TokenBudget
 from jobguard.agent.rank import Profile, score_posting
-from jobguard.guardrails import check_scam, redact_pii, scan_injection, strip_hidden_text
+from jobguard.guardrails import (
+    check_scam,
+    collapse_boilerplate,
+    redact_pii,
+    scan_injection,
+    strip_hidden_text,
+)
 from jobguard.llm.client import LLMClient, LLMError
 from jobguard.llm.schemas import (
     Classification,
@@ -87,6 +93,15 @@ class PipelineResult:
     detail: str = ""
 
 
+_RETRY_EXAMPLES: dict[str, str] = {
+    "Classification": '{"kind": "posting", "confidence": 0.9, "reason": "..."}',
+    "PostingExtraction": '{"company": "Acme", "role": "SDE Intern", "location": "", '
+    '"deadline": "", "link": "", "skills": [], "eligibility": ""}',
+    "MatchResult": '{"score": 0, "reasons": [], "resume_item_ids": []}',
+    "TailoringCard": '{"posting_key": "k", "suggestions": [], "gaps": []}',
+}
+
+
 def _complete_parsed(
     client: LLMClient,
     model: type[BaseModel],
@@ -95,14 +110,24 @@ def _complete_parsed(
     user: str,
     budget: TokenBudget | None = None,
 ) -> BaseModel:
-    """One LLM call with exactly one retry; raises on persistent failure."""
+    """One LLM call with exactly one retry; raises on persistent failure.
+
+    The retry repeats the shape contract with a minimal example: most
+    validation failures are models punting with ``{}`` or echoing the
+    schema, and restating the exact expected shape recovers them.
+    """
     response = client.complete(system=system, user=user)
     if budget is not None:
         budget.charge(system=system, user=user, response=response)
     try:
         return parse_strict(model, response.text)
     except SchemaValidationError:
-        retry_user = user + "\n\nReturn ONLY valid JSON matching the schema. No prose."
+        example = _RETRY_EXAMPLES.get(model.__name__, "{}")
+        retry_user = (
+            user
+            + "\n\nThat was not valid. Respond with exactly one JSON object "
+            + f"and no other text, shaped exactly like this: {example}"
+        )
         retry = client.complete(system=system, user=retry_user)
         if budget is not None:
             budget.charge(system=system, user=retry_user, response=retry)
@@ -127,7 +152,7 @@ def run_pipeline(
     """Run the full pipeline for one stored posting. Never raises for content."""
     # --- Guardrails first: the LLM only sees cleaned, redacted text. ---
     hidden = strip_hidden_text(body)
-    cleaned = hidden.text or body
+    cleaned = collapse_boilerplate(hidden.text) or body
     if hidden.removed:
         _audit(
             session,
