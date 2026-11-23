@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Audit — JobGuard{% endblock %}
+{% block content %}
+<h1>Audit <span class="accent">log.</span></h1>
+<p class="sub">Latest {{ entries|length }} events · metadata only, never message content</p>
+<table class="clean">
+<tr><th>Time</th><th>Event</th><th>Detail</th></tr>
+{% for e in entries %}
+<tr><td>{{ e.created_at }}</td><td>{{ e.event }}</td><td class="meta">{{ e.detail }}</td></tr>
+{% endfor %}
+</table>
+{% endblock %}
