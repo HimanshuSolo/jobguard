@@ -1,0 +1,66 @@
+name: worker
+
+# Stateless scheduled runs: fetch -> pipeline -> digest. Twice daily so the
+# morning and evening digests each get a fresh sync. Idempotent catch-up via
+# run_state/emails_sent/canonical keys: overlapping or retried runs are safe.
+on:
+  schedule:
+    - cron: "30 1 * * *" # ~morning window (UTC)
+    - cron: "30 13 * * *" # ~evening window (UTC)
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Restore Gmail token
+        # Gmail OAuth refresh token lives in data/private/ (gitignored).
+        # Store its JSON in the GMAIL_TOKEN_JSON secret.
+        run: |
+          mkdir -p data/private
+          if [ -n "${{ secrets.GMAIL_TOKEN_JSON }}" ]; then
+            echo '${{ secrets.GMAIL_TOKEN_JSON }}' > data/private/gmail_token.json
+          fi
+
+      - name: Sync sources + run pipeline
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          IMAP_HOST: ${{ secrets.IMAP_HOST }}
+          IMAP_USER: ${{ secrets.IMAP_USER }}
+          BOARDS_CONFIG_PATH: data/boards.yaml
+        run: |
+          uv run jobguard init-db
+          uv run jobguard run-worker
+
+      - name: Send digest
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          SENDER_SMTP_HOST: ${{ secrets.SENDER_SMTP_HOST }}
+          SENDER_SMTP_PORT: ${{ secrets.SENDER_SMTP_PORT }}
+          SENDER_SMTP_USER: ${{ secrets.SENDER_SMTP_USER }}
+          SENDER_SMTP_PASSWORD: ${{ secrets.SENDER_SMTP_PASSWORD }}
+          SENDER_FROM_ADDRESS: ${{ secrets.SENDER_FROM_ADDRESS }}
+        run: |
+          HOUR=$(date -u +%H)
+          if [ "$HOUR" -lt 12 ]; then KIND=morning; else KIND=evening; fi
+          uv run jobguard build-digest --kind "$KIND"
+          uv run jobguard build-digest --kind urgent
