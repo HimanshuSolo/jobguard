@@ -35,6 +35,7 @@ from jobguard.llm.schemas import (
 )
 from jobguard.resume.checker import check_card
 from jobguard.resume.loader import Resume
+from jobguard.resume.summary import compact_resume
 from jobguard.store.models import AuditLog, Posting, Suggestion
 
 log = structlog.get_logger(__name__)
@@ -142,11 +143,14 @@ def run_pipeline(
     resume: Resume,
     session: Session,
     budget: TokenBudget | None = None,
+    max_input_chars: int = 3000,
 ) -> PipelineResult:
     """Run the full pipeline for one stored posting. Never raises for content."""
     # --- Guardrails first: the LLM only sees cleaned, redacted text. ---
     hidden = strip_hidden_text(body)
     cleaned = collapse_boilerplate(hidden.text) or body
+    if len(cleaned) > max_input_chars:
+        cleaned = cleaned[:max_input_chars] + "\n…[input truncated]"
     if hidden.removed:
         _audit(
             session,
@@ -168,6 +172,8 @@ def run_pipeline(
         return PipelineResult(status="quarantined", detail="injection patterns matched")
 
     redacted = redact_pii(cleaned).text
+    if len(redacted) > max_input_chars:
+        redacted = redacted[:max_input_chars] + "\n…[input truncated]"
     posting.pipe_status = "analyzing"
     posting.pipe_stage = "none"
     session.commit()
@@ -266,7 +272,7 @@ def run_pipeline(
             user=(
                 "[match_suggest]\n"
                 f"Profile skills: {', '.join(profile.skills)}\n"
-                f"Resume IDs: {sorted(resume.known_ids())}\n"
+                f"Resume:\n{compact_resume(resume)}\n"
                 f"Posting: {extraction.model_dump_json()}"
             ),
             budget=budget,

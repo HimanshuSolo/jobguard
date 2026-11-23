@@ -138,6 +138,7 @@ def _run_pipeline_stage(session: Session, settings: Settings) -> None:
                 resume=resume,
                 session=session,
                 budget=budget,
+                max_input_chars=settings.llm_max_input_chars,
             )
         except BudgetExhausted:
             print("Token budget exhausted; stopping pipeline stage.")
