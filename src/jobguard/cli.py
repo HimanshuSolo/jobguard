@@ -200,6 +200,27 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_status(_: argparse.Namespace) -> int:
+    from jobguard.ingestion import summarize
+    from jobguard.store import get_engine, init_db, session_factory
+
+    settings = get_settings()
+    engine = get_engine(settings.database_url)
+    init_db(engine)
+    sessions = session_factory(engine)
+    with sessions() as session:
+        report = summarize(session)
+    print(
+        f"total={report['total']} scored={report['scored']} "
+        f"eligible={report['eligible']} queued={report['queued']} "
+        f"expired={report['expired']} suggestions={report['suggestions']}"
+    )
+    print("skipped_by_reason:")
+    for reason, count in report["skipped_by_reason"].items():
+        print(f"  {reason}: {count}")
+    return 0
+
+
 def _cmd_eval(args: argparse.Namespace) -> int:
     # Local import: evals/ is top-level, not part of the package.
     # The CLI assumes it runs from the repo root (cases/baseline paths do too).
@@ -292,6 +313,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_worker = sub.add_parser("run-worker", help="Sync all configured sources into the DB.")
     p_worker.set_defaults(func=_cmd_run_worker)
+
+    p_status = sub.add_parser("status", help="Honest pipeline progress report.")
+    p_status.set_defaults(func=_cmd_status)
 
     p_digest = sub.add_parser("build-digest", help="Build and send a digest email.")
     p_digest.add_argument("--kind", choices=["morning", "evening", "urgent"], default="morning")

@@ -1,6 +1,6 @@
 """Database store package."""
 
-from jobguard.store.db import get_engine, init_db, session_factory
+from jobguard.store.db import ensure_columns, get_engine, init_db, session_factory
 from jobguard.store.models import (
     AuditLog,
     Base,
@@ -23,6 +23,7 @@ __all__ = [
     "RawPosting",
     "RunState",
     "Suggestion",
+    "ensure_columns",
     "get_engine",
     "init_db",
     "session_factory",

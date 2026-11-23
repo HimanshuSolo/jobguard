@@ -10,6 +10,12 @@ from jobguard.ingestion.normalize import (
     normalize_url,
 )
 from jobguard.ingestion.prefilter import DEFAULT_KEYWORDS, DEFAULT_SENDERS, Prefilter, keep
+from jobguard.ingestion.status import (
+    RETRYABLE_STATUSES,
+    TERMINAL_STATUSES,
+    backfill_statuses,
+    summarize,
+)
 from jobguard.ingestion.sync import SyncResult, sync_source
 
 __all__ = [
@@ -17,7 +23,10 @@ __all__ = [
     "DEFAULT_SENDERS",
     "NormalizedPosting",
     "Prefilter",
+    "RETRYABLE_STATUSES",
     "SyncResult",
+    "TERMINAL_STATUSES",
+    "backfill_statuses",
     "canonical_key",
     "keep",
     "key_of",
@@ -26,5 +35,6 @@ __all__ = [
     "normalize_item",
     "normalize_text",
     "normalize_url",
+    "summarize",
     "sync_source",
 ]

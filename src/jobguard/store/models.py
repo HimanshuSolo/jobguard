@@ -68,6 +68,11 @@ class Posting(Base):
     score: Mapped[float] = mapped_column(Float, default=0.0)
     scam_flag: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(32), default="new")
+    # Pipeline state machine (Phase 8; distinct from the user-facing status
+    # above). Terminal states are never re-processed by later runs.
+    pipe_status: Mapped[str] = mapped_column(String(32), default="queued")
+    pipe_stage: Mapped[str] = mapped_column(String(32), default="none")
+    cheap_score: Mapped[float] = mapped_column(Float, default=0.0)
 
 
 class Suggestion(Base):
