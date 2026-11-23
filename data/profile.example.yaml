@@ -1,0 +1,16 @@
+# Owner profile for ranking (Phase 4). Copy to data/profile.yaml and edit.
+# All values are plain substrings matched case-insensitively.
+skills:
+  - Python
+  - SQL
+  - FastAPI
+  - React
+role_types:
+  - SDE
+  - Software Engineer
+  - Backend
+  - Intern
+locations:
+  - Remote
+  - Bengaluru
+new_grad: true
