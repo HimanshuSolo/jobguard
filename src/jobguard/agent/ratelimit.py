@@ -74,3 +74,17 @@ class RateLimiter:
             return
         with self._lock:
             self._not_before = max(self._not_before, self._clock() + seconds)
+
+    def observe_waits(self, observer: Callable[[float], None]) -> None:
+        """Chain an observer onto the sleeper (metering, incl. fake clocks).
+
+        The observer runs before each sleep with the waited seconds. Safe
+        to call once per limiter; wrapping twice would double-count.
+        """
+        inner = self._sleep
+
+        def _sleep(seconds: float) -> None:
+            observer(seconds)
+            inner(seconds)
+
+        self._sleep = _sleep

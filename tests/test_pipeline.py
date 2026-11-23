@@ -35,15 +35,18 @@ def _env() -> tuple[Profile, Resume]:
     return profile, resume
 
 
+def _merged_json() -> str:
+    return (
+        '{"kind": "posting", "confidence": 0.9,'
+        ' "company": "Acme", "role": "SDE Intern", "location": "Remote",'
+        ' "link": "https://acme.example/j", "skills": ["Python"]}'
+    )
+
+
 def _client(suggest_ids: str = '["exp-1"]') -> FakeClient:
     return FakeClient(
         rules=[
-            ("[classify]", '{"kind": "posting", "confidence": 0.9}'),
-            (
-                "[extract]",
-                '{"company": "Acme", "role": "SDE Intern", "location": "Remote",'
-                ' "link": "https://acme.example/j", "skills": ["Python"]}',
-            ),
+            ("[classify_extract]", _merged_json()),
             (
                 "[match_suggest]",
                 '{"score": 82, "reasons": ["good fit"], "resume_item_ids": ["exp-1"],'
@@ -80,7 +83,7 @@ def test_happy_path_suggested() -> None:
 def test_non_posting_skipped() -> None:
     engine = create_engine("sqlite:///:memory:")
     init_db(engine)
-    client = FakeClient(rules=[("[classify]", '{"kind": "newsletter", "confidence": 0.9}')])
+    client = FakeClient(rules=[("[classify_extract]", '{"kind": "newsletter", "confidence": 0.9}')])
     with Session(engine) as session:
         post = _posting(session)
         profile, resume = _env()
@@ -97,12 +100,33 @@ def test_non_posting_skipped() -> None:
         assert session.query(Suggestion).count() == 0
 
 
-def test_invalid_extract_skipped_after_retry() -> None:
+def test_invalid_merged_retried_once_then_skipped() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    init_db(engine)
+    client = FakeClient(default="not json at all")
+    with Session(engine) as session:
+        post = _posting(session)
+        profile, resume = _env()
+        result = run_pipeline(
+            post,
+            body="SDE Intern at Acme",
+            sender="s",
+            client=client,
+            profile=profile,
+            resume=resume,
+            session=session,
+        )
+        assert result.status == "skipped"
+        # Malformed JSON: initial merged attempt + one retry, then give up.
+        merged_calls = [c for c in client.calls if "[classify_extract]" in c["user"]]
+        assert len(merged_calls) == 2
+
+
+def test_empty_fields_skipped_without_retry() -> None:
     engine = create_engine("sqlite:///:memory:")
     init_db(engine)
     client = FakeClient(
-        rules=[("[classify]", '{"kind": "posting", "confidence": 0.9}')],
-        default="not json at all",
+        rules=[("[classify_extract]", '{"kind": "posting", "confidence": 0.9}')],
     )
     with Session(engine) as session:
         post = _posting(session)
@@ -117,8 +141,9 @@ def test_invalid_extract_skipped_after_retry() -> None:
             session=session,
         )
         assert result.status == "skipped"
-        # One classify call + two extract attempts (initial + retry).
-        assert len([c for c in client.calls if "[extract]" in c["user"]]) == 2
+        # Well-formed but empty extraction: single projection failure, no retry.
+        merged_calls = [c for c in client.calls if "[classify_extract]" in c["user"]]
+        assert len(merged_calls) == 1
 
 
 def test_scam_flagged_no_llm_match() -> None:
@@ -188,10 +213,10 @@ def test_fast_client_handles_classify_and_extract() -> None:
     init_db(engine)
     fast = FakeClient(
         rules=[
-            ("[classify]", '{"kind": "posting", "confidence": 0.95}'),
             (
-                "[extract]",
-                '{"company": "Acme", "role": "SDE Intern", "location": "Remote",'
+                "[classify_extract]",
+                '{"kind": "posting", "confidence": 0.95,'
+                ' "company": "Acme", "role": "SDE Intern", "location": "Remote",'
                 ' "link": "", "skills": []}',
             ),
         ]
@@ -221,11 +246,10 @@ def test_fast_client_handles_classify_and_extract() -> None:
         )
         assert result.status == "suggested"
         assert result.score == 61
-        assert any("[classify]" in c["user"] for c in fast.calls)
-        assert any("[extract]" in c["user"] for c in fast.calls)
+        assert any("[classify_extract]" in c["user"] for c in fast.calls)
         assert not any("[match_suggest]" in c["user"] for c in fast.calls)
         assert any("[match_suggest]" in c["user"] for c in smart.calls)
-        assert not any("[classify]" in c["user"] for c in smart.calls)
+        assert not any("[classify_extract]" in c["user"] for c in smart.calls)
 
 
 def test_template_parsed_skips_classify_and_extract() -> None:

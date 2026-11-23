@@ -310,6 +310,23 @@ the approved canary. Diagnosis lives in `docs/PERF_REPORT.md`.
   (in-flight items finish, the rest stay queued/retryable), and the run
   reports which budget hit. On-demand analyze maps it to
   "Run budget exhausted".
+- 2.11 observability + gate: `RunMeter` (thread-safe) records calls,
+  cache hits, 429s, limiter sleeps, per-stage tokens in/out, per-attempt
+  latency; `summary()` reports calls/posting, hit rate, p50/p95,
+  sleep/network/local split, items/min. Wired through run_pipeline,
+  the limiter (`observe_waits`), the client (429 hook), and the worker
+  (prints a meter line per run). The eval/CI gate asserts mean
+  `pipeline_calls_per_posting` <= 2.0 (baseline thresholds v8;
+  measured 1.167 — no baseline loosening, thresholds only added).
+- Contract change (item 2.11): classify+extract merged into ONE
+  `ClassifyExtract` call — the 2.0 gate is unreachable otherwise
+  (unknown-format success cost 3 calls). Non-postings still exit after
+  one call; posting fields are projection-validated against
+  PostingExtraction (empty-fields failure skips without retry — a
+  validation verdict, not a punt). PROMPT_VERSION bumped to v2. Eval
+  harness combines classify_json+extract_json into one rule and skips
+  intentionally-invalid parts (pipe-03 still fails safely via the
+  projection). Live-prompt risk noted for the Step 4 canary.
 
 ### Decisions (Phase 9, so far)
 

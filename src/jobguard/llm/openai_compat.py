@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import httpx
 import structlog
 
+from jobguard.agent.meter import RunMeter
 from jobguard.llm.client import LLMError, LLMResponse
 
 if TYPE_CHECKING:
@@ -36,6 +37,7 @@ class OpenAICompatClient:
         max_retries: int = 2,
         limiter: RateLimiter | None = None,
         transport: httpx.BaseTransport | None = None,
+        meter: RunMeter | None = None,
     ) -> None:
         if not base_url:
             raise ValueError("base_url is required for OpenAICompatClient")
@@ -50,6 +52,7 @@ class OpenAICompatClient:
         self._max_retries = max_retries
         self._limiter = limiter
         self._transport = transport
+        self._meter = meter
 
     @property
     def name(self) -> str:
@@ -96,6 +99,8 @@ class OpenAICompatClient:
                         return resp
                     if status == 429 or 500 <= status < 600:
                         last_error = f"HTTP {status}"
+                        if status == 429 and self._meter is not None:
+                            self._meter.record_429()
                         if attempt < self._max_retries:
                             retry_after = self._parse_retry_after(resp)
                             if retry_after is not None and self._limiter is not None:

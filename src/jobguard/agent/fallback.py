@@ -13,6 +13,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from jobguard.agent.meter import estimate_tokens
 from jobguard.llm.client import LLMClient, LLMError, LLMResponse
 
 
@@ -59,7 +60,7 @@ class TokenBudget:
     def charge(self, *, system: str, user: str, response: LLMResponse) -> None:
         """Account one call; estimates when the provider reports no usage."""
         reported = response.input_tokens + response.output_tokens
-        estimate = (len(system) + len(user) + len(response.text)) // 4
+        estimate = estimate_tokens(system, user, response.text)
         cost = reported if reported > 0 else estimate
         with self._lock:
             if self.max_requests is not None and self.used_requests + 1 > self.max_requests:

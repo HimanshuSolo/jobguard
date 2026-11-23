@@ -9,14 +9,16 @@ never produce suggestions.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
 import structlog
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from jobguard.agent.fallback import BudgetExhausted, TokenBudget
+from jobguard.agent.meter import RunMeter
 from jobguard.agent.rank import Profile, score_posting
 from jobguard.guardrails import (
     check_scam,
@@ -28,7 +30,7 @@ from jobguard.guardrails import (
 from jobguard.llm.cache import cache_get, cache_key, cache_put
 from jobguard.llm.client import LLMClient, LLMError
 from jobguard.llm.schemas import (
-    Classification,
+    ClassifyExtract,
     MatchAndSuggest,
     PostingExtraction,
     SchemaValidationError,
@@ -47,21 +49,18 @@ PipelineStatus = Literal["suggested", "skipped", "quarantined", "flagged", "viol
 # models (they echo the schema as content); a tiny example plus an explicit
 # key list is followed reliably. Each example is valid per its Pydantic model.
 _SYSTEMS: dict[str, str] = {
-    "classify": (
-        "Decide what kind of email this is. Respond with exactly one JSON "
-        "object and no other text. The object must have exactly these keys: "
-        "kind (one of: posting, newsletter, otp, spam, other), confidence "
-        "(0 to 1), reason (string). "
+    "classify_extract": (
+        "Decide what kind of email this is AND extract the job posting "
+        "fields, in one JSON object and no other text. The object must have "
+        "exactly these keys: kind (one of: posting, newsletter, otp, spam, "
+        "other), confidence (0 to 1), reason (string), company, role, "
+        "location, deadline, link, skills (array of strings), eligibility. "
+        "When kind is not posting, leave company/role/location/deadline/link "
+        "empty. When kind is posting, company and role are required "
+        "non-empty strings; use empty strings/arrays for unknown fields. "
         'Example: {"kind": "posting", "confidence": 0.9, '
-        '"reason": "lists role and company"}'
-    ),
-    "extract": (
-        "Extract the job posting fields. Respond with exactly one JSON "
-        "object and no other text, with exactly these keys: company, role "
-        "(both required non-empty strings), location, deadline, link, "
-        "skills (array of strings), eligibility. Use empty strings/arrays "
-        "when unknown. "
-        'Example: {"company": "Acme", "role": "SDE Intern", "location": "Remote", '
+        '"reason": "lists role and company", '
+        '"company": "Acme", "role": "SDE Intern", "location": "Remote", '
         '"deadline": "", "link": "https://acme.example/j", '
         '"skills": ["Python"], "eligibility": "Final-year students"}'
     ),
@@ -90,8 +89,8 @@ class PipelineResult:
 
 
 _RETRY_EXAMPLES: dict[str, str] = {
-    "Classification": '{"kind": "posting", "confidence": 0.9, "reason": "..."}',
-    "PostingExtraction": '{"company": "Acme", "role": "SDE Intern", "location": "", '
+    "ClassifyExtract": '{"kind": "posting", "confidence": 0.9, "reason": "...", '
+    '"company": "Acme", "role": "SDE Intern", "location": "", '
     '"deadline": "", "link": "", "skills": [], "eligibility": ""}',
     "MatchAndSuggest": '{"score": 0, "reasons": [], "resume_item_ids": [], '
     '"posting_key": "k", "suggestions": [], "gaps": []}',
@@ -99,7 +98,7 @@ _RETRY_EXAMPLES: dict[str, str] = {
 
 # Bump when any prompt in _SYSTEMS changes shape or meaning: cached
 # responses keyed on an older version are never served.
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 
 def _complete_parsed(
@@ -113,6 +112,7 @@ def _complete_parsed(
     stage: str,
     budget: TokenBudget | None = None,
     use_cache: bool = True,
+    meter: RunMeter | None = None,
 ) -> BaseModel:
     """One LLM call with exactly one retry; raises on persistent failure.
 
@@ -138,8 +138,21 @@ def _complete_parsed(
                     "pipeline.cache_hit",
                     {"posting_id": posting_id, "stage": stage},
                 )
+                if meter is not None:
+                    meter.record_hit(stage)
                 return parsed_hit
+    start = time.perf_counter()
     response = client.complete(system=system, user=user)
+    if meter is not None:
+        meter.record_call(
+            stage,
+            system=system,
+            user=user,
+            text=response.text,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            latency_s=time.perf_counter() - start,
+        )
     if budget is not None:
         budget.charge(system=system, user=user, response=response)
     try:
@@ -152,7 +165,18 @@ def _complete_parsed(
             + "\n\nThat was not valid. Respond with exactly one JSON object "
             + f"and no other text, shaped exactly like this: {example}"
         )
+        start = time.perf_counter()
         retry = client.complete(system=system, user=retry_user)
+        if meter is not None:
+            meter.record_call(
+                stage,
+                system=system,
+                user=retry_user,
+                text=retry.text,
+                input_tokens=retry.input_tokens,
+                output_tokens=retry.output_tokens,
+                latency_s=time.perf_counter() - start,
+            )
         if budget is not None:
             budget.charge(system=system, user=retry_user, response=retry)
         parsed = parse_strict(model, retry.text)
@@ -185,6 +209,7 @@ def run_pipeline(
     max_input_chars: int = 3000,
     fast_client: LLMClient | None = None,
     use_cache: bool = True,
+    meter: RunMeter | None = None,
 ) -> PipelineResult:
     """Run the full pipeline for one stored posting. Never raises for content."""
     # --- Guardrails first: the LLM only sees cleaned, redacted text. ---
@@ -231,7 +256,6 @@ def run_pipeline(
         and (posting.link or "").strip()
     )
     if template_parsed:
-        classification_kind = "posting"
         extraction = PostingExtraction(
             company=posting.company,
             role=posting.role,
@@ -244,61 +268,50 @@ def run_pipeline(
         session.commit()
     else:
         try:
-            classification = _complete_parsed(
+            merged = _complete_parsed(
                 cheap_client,
-                Classification,
-                system=_SYSTEMS["classify"],
-                user=f"[classify]\n{redacted}",
+                ClassifyExtract,
+                system=_SYSTEMS["classify_extract"],
+                user=f"[classify_extract]\n{redacted}",
                 session=session,
                 posting_id=posting.id,
-                stage="classify",
+                stage="classify_extract",
                 budget=budget,
                 use_cache=use_cache,
+                meter=meter,
             )
         except BudgetExhausted:
             raise
         except (LLMError, SchemaValidationError, RuntimeError) as exc:
-            _audit(session, "pipeline.classify_fail", {"posting_id": posting.id})
+            _audit(session, "pipeline.classify_extract_fail", {"posting_id": posting.id})
             posting.pipe_status = "failed"
             posting.pipe_stage = "none"
             session.commit()
-            return PipelineResult(status="skipped", detail=f"classify failed: {type(exc).__name__}")
-        assert isinstance(classification, Classification)
+            return PipelineResult(
+                status="skipped", detail=f"classify+extract failed: {type(exc).__name__}"
+            )
+        assert isinstance(merged, ClassifyExtract)
         posting.pipe_stage = "classified"
         session.commit()
-        if classification.kind != "posting":
+        if merged.kind != "posting":
             _audit(
                 session,
                 "pipeline.skip_non_posting",
-                {"posting_id": posting.id, "kind": classification.kind},
+                {"posting_id": posting.id, "kind": merged.kind},
             )
             posting.pipe_status = "skipped_non_job"
             session.commit()
-            return PipelineResult(status="skipped", detail=f"kind={classification.kind}")
-        classification_kind = classification.kind
+            return PipelineResult(status="skipped", detail=f"kind={merged.kind}")
         try:
-            extraction = _complete_parsed(
-                cheap_client,
-                PostingExtraction,
-                system=_SYSTEMS["extract"],
-                user=f"[extract]\n{redacted}",
-                session=session,
-                posting_id=posting.id,
-                stage="extract",
-                budget=budget,
-                use_cache=use_cache,
-            )
-        except BudgetExhausted:
-            raise
-        except (LLMError, SchemaValidationError, RuntimeError) as exc:
+            extraction = PostingExtraction.model_validate(merged.model_dump())
+        except ValidationError as exc:
             _audit(session, "pipeline.extract_fail", {"posting_id": posting.id})
             posting.pipe_status = "failed"
             session.commit()
             return PipelineResult(status="skipped", detail=f"extract failed: {type(exc).__name__}")
-        assert isinstance(extraction, PostingExtraction)
         posting.pipe_stage = "extracted"
         session.commit()
-    assert classification_kind == "posting"
+    assert extraction.company and extraction.role
 
     # --- Scam screen on extracted fields: flagged items stop here. ---
     scam = check_scam(
@@ -336,6 +349,7 @@ def run_pipeline(
             stage="match_suggest",
             budget=budget,
             use_cache=use_cache,
+            meter=meter,
         )
     except BudgetExhausted:
         raise

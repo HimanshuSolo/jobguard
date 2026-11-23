@@ -48,12 +48,6 @@ def _env() -> tuple[Profile, Resume]:
 def _client() -> FakeClient:
     return FakeClient(
         rules=[
-            ("[classify]", '{"kind": "posting", "confidence": 0.9}'),
-            (
-                "[extract]",
-                '{"company": "Acme", "role": "SDE Intern", "location": "Remote",'
-                ' "link": "https://acme.example/j", "skills": ["Python"]}',
-            ),
             (
                 "[match_suggest]",
                 '{"score": 82, "reasons": ["good fit"], "resume_item_ids": ["exp-1"],'

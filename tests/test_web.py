@@ -302,7 +302,12 @@ def test_pipeline_input_cap_applies() -> None:
     engine = create_engine("sqlite:///:memory:")
     init_db(engine)
     client = FakeClient(
-        rules=[("[classify]", '{"kind": "posting", "confidence": 0.9}')],
+        rules=[
+            (
+                "[classify_extract]",
+                '{"kind": "posting", "confidence": 0.9, "company": "Acme", "role": "SDE Intern"}',
+            )
+        ],
         default="NOT-JSON",
     )
     with Session(engine) as session:
@@ -324,7 +329,7 @@ def test_pipeline_input_cap_applies() -> None:
             max_input_chars=100,
         )
         sent = client.calls[0]["user"]
-        assert len(sent) <= 100 + len("[classify]\n…[input truncated]") + 50
+        assert len(sent) <= 100 + len("[classify_extract]\n…[input truncated]") + 50
 
 
 def test_resume_dict_from_text_shapes() -> None:

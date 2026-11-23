@@ -516,13 +516,21 @@ def _run_pipeline_smoke(case: dict[str, Any]) -> dict[str, Any]:
 
     raw = case.get("input", {})
     rules = []
-    for marker, key in [
-        ("[classify]", "classify_json"),
-        ("[extract]", "extract_json"),
-        ("[match_suggest]", "match_suggest_json"),
-    ]:
+    combined: dict[str, object] = {}
+    for key in ("classify_json", "extract_json"):
         if key in raw:
-            rules.append((marker, str(raw[key])))
+            try:
+                part = json.loads(str(raw[key]))
+            except json.JSONDecodeError:
+                continue  # intentionally-invalid part: the merged rule
+                # carries the remaining valid parts, and the pipeline must
+                # still fail safely on the incomplete shape.
+            if isinstance(part, dict):
+                combined.update(part)
+    if combined:
+        rules.append(("[classify_extract]", json.dumps(combined)))
+    if "match_suggest_json" in raw:
+        rules.append(("[match_suggest]", str(raw["match_suggest_json"])))
     client = FakeClient(rules=rules, default="NOT-JSON")
     profile_raw = raw.get("profile", {})
     profile = Profile(
@@ -537,6 +545,7 @@ def _run_pipeline_smoke(case: dict[str, Any]) -> dict[str, Any]:
     engine = create_engine("sqlite:///:memory:")
     init_db(engine)
     with Session(engine) as session:
+        from jobguard.agent import RunMeter
         from jobguard.ingestion import canonical_key as _key
 
         post = Posting(
@@ -546,6 +555,7 @@ def _run_pipeline_smoke(case: dict[str, Any]) -> dict[str, Any]:
         )
         session.add(post)
         session.commit()
+        meter = RunMeter()
         result = run_pipeline(
             post,
             body=str(raw.get("body", "")),
@@ -554,12 +564,15 @@ def _run_pipeline_smoke(case: dict[str, Any]) -> dict[str, Any]:
             profile=profile,
             resume=resume,
             session=session,
+            meter=meter,
         )
     want = case.get("expected", {})
     passed = result.status == want.get("status")
     if "score" in want:
         passed = passed and result.score == float(want["score"])
-    return _result(case, passed, f"status={result.status} score={result.score}")
+    res = _result(case, passed, f"status={result.status} score={result.score}")
+    res["llm_calls"] = meter.calls
+    return res
 
 
 def _run_rank_order(case: dict[str, Any]) -> dict[str, Any]:

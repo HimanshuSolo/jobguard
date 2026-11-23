@@ -24,11 +24,17 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
         }
         for cat, b in sorted(by_category.items())
     }
+    pipe_calls = [
+        r["llm_calls"]
+        for r in results
+        if r.get("task") == "pipeline_smoke" and isinstance(r.get("llm_calls"), int)
+    ]
     return {
         "total": total,
         "passed": passed,
         "accuracy": (passed / total) if total else 0.0,
         "categories": categories,
+        "pipeline_calls_per_posting": (sum(pipe_calls) / len(pipe_calls)) if pipe_calls else None,
     }
 
 
@@ -58,4 +64,11 @@ def compare_with_baseline(metrics: dict[str, Any], baseline: dict[str, Any]) -> 
                 f"accuracy {accuracy:.3f} regressed vs baseline "
                 f"{base_accuracy:.3f} (allowed drop {max_regression:.3f})"
             )
+
+    max_calls = float(thresholds.get("max_calls_per_posting", 2.0))
+    calls_per_posting = metrics.get("pipeline_calls_per_posting")
+    if isinstance(calls_per_posting, (int, float)) and float(calls_per_posting) > max_calls:
+        regressions.append(
+            f"pipeline calls/posting {float(calls_per_posting):.2f} above maximum {max_calls:.2f}"
+        )
     return regressions

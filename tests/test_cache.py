@@ -121,7 +121,7 @@ def test_prompt_version_change_invalidates(tmp_path: Path, monkeypatch: pytest.M
             resume=resume,
             session=session,
         )
-        monkeypatch.setattr(pipeline_mod, "PROMPT_VERSION", "v2")
+        monkeypatch.setattr(pipeline_mod, "PROMPT_VERSION", pipeline_mod.PROMPT_VERSION + ".test")
         uncached = _match_client()
         result = run_pipeline(
             _posting(session, 1),

@@ -1,9 +1,10 @@
 """Typed schemas for every LLM pipeline step (SPEC section 6).
 
 Each model is the contract for one step: Classification, PostingExtraction,
-MatchResult, TailoringCard. Pipeline code (Phase 4) parses raw model text into
-these with :func:`parse_strict`, retrying once on validation failure and then
-failing safely (skip the item, log it).
+MatchResult, TailoringCard — plus the merged ClassifyExtract (steps 1+2 in
+one call) and MatchAndSuggest (steps 3+4). Pipeline code parses raw model
+text into these with :func:`parse_strict`, retrying once on validation
+failure and then failing safely (skip the item, log it).
 """
 
 from __future__ import annotations
@@ -35,6 +36,27 @@ class PostingExtraction(BaseModel):
 
     company: str = Field(min_length=1)
     role: str = Field(min_length=1)
+    location: str = ""
+    deadline: str = ""
+    link: str = ""
+    skills: list[str] = Field(default_factory=list)
+    eligibility: str = ""
+
+
+class ClassifyExtract(BaseModel):
+    """Steps 1+2 in one call: kind first, then fields (empty unless posting).
+
+    Validates exactly as strictly as the separate schemas: ``kind`` carries
+    the Classification contract, the rest the PostingExtraction contract.
+    Non-postings stop here, so the fields stay empty for them and are only
+    parsed when kind == "posting".
+    """
+
+    kind: Literal["posting", "newsletter", "otp", "spam", "other"]
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason: str = ""
+    company: str = ""
+    role: str = ""
     location: str = ""
     deadline: str = ""
     link: str = ""

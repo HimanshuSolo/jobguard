@@ -8,7 +8,7 @@ import sys
 import structlog
 from sqlalchemy.orm import Session, sessionmaker
 
-from jobguard.agent import TokenBudget
+from jobguard.agent import RunMeter, TokenBudget
 from jobguard.agent.rank import Profile
 from jobguard.config import Settings, get_settings
 from jobguard.llm.client import LLMClient
@@ -78,11 +78,14 @@ def _run_pipeline_stage(sessions: sessionmaker[Session], settings: Settings) -> 
         if not Path(str(getattr(settings, path_attr))).exists():
             print(f"No {label} at {getattr(settings, path_attr)}; skipping pipeline stage.")
             return
+    meter = RunMeter()
     try:
-        client, fast_client, _limiter = build_pipeline_clients(settings)
+        client, fast_client, _limiter = build_pipeline_clients(settings, meter)
     except (ValueError, RuntimeError) as exc:
         print(f"LLM client unavailable ({exc}); skipping pipeline stage.")
         return
+    if _limiter is not None:
+        _limiter.observe_waits(meter.record_sleep)
     profile = load_profile(str(settings.profile_path))
     resume = load_resume(str(settings.resume_path))
     budget = TokenBudget(
@@ -150,8 +153,21 @@ def _run_pipeline_stage(sessions: sessionmaker[Session], settings: Settings) -> 
         budget=budget,
         max_input_chars=settings.llm_max_input_chars,
         max_workers=settings.llm_workers,
+        meter=meter,
     )
     print(f"pipeline: {counts or 'nothing pending'} (tokens used: {budget.used_tokens})")
+    meter.finish()
+    summary = meter.summary(len(pending_ids))
+    print(
+        "meter: "
+        f"calls={summary['calls']} calls/posting={summary['calls_per_posting']:.2f} "
+        f"hit_rate={summary['cache_hit_rate']:.0%} "
+        f"tok_in={summary['tokens_in']} tok_out={summary['tokens_out']} "
+        f"p50={summary['latency_p50_s']}s p95={summary['latency_p95_s']}s "
+        f"sleep={summary['sleep_s']}s net={summary['network_s']}s "
+        f"local={summary['local_s']}s 429s={summary['errors_429']} "
+        f"items/min={summary['items_per_min']}"
+    )
 
 
 def _run_pool(
@@ -165,12 +181,14 @@ def _run_pool(
     budget: TokenBudget,
     max_input_chars: int,
     max_workers: int,
+    meter: RunMeter | None = None,
 ) -> dict[str, int]:
     """Bounded worker pool: one DB session per item, shared throttled clients.
 
     Threads never share sessions or ORM objects (only ids cross the
-    boundary); the limiter, budget, and circuit breaker are thread-safe.
-    A BudgetExhausted run stops intake while in-flight items finish.
+    boundary); the limiter, budget, circuit breaker, and meter are
+    thread-safe. A BudgetExhausted run stops intake while in-flight items
+    finish.
     """
     from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 
@@ -200,6 +218,7 @@ def _run_pool(
                     budget=budget,
                     max_input_chars=max_input_chars,
                     fast_client=fast_client,
+                    meter=meter,
                 )
             except BudgetExhausted as exc:
                 stop_reason = str(exc)
@@ -397,7 +416,7 @@ def _live_smoke() -> bool:
     schema-valid output. No real data; never fails silently into a digest.
     """
     from jobguard.llm.factory import build_client
-    from jobguard.llm.schemas import Classification, parse_strict
+    from jobguard.llm.schemas import ClassifyExtract, parse_strict
 
     try:
         settings = get_settings()
@@ -408,11 +427,11 @@ def _live_smoke() -> bool:
             return True
         client = build_client(settings)
         response = client.complete(
-            system="Classify job-alert text. Respond with JSON only.",
-            user="[classify]\nSDE Intern at Acme Labs. Apply at https://acme.example/j",
+            system="Classify job-alert text and extract fields. Respond with JSON only.",
+            user="[classify_extract]\nSDE Intern at Acme Labs. Apply at https://acme.example/j",
         )
-        parsed = parse_strict(Classification, response.text)
-        assert isinstance(parsed, Classification)
+        parsed = parse_strict(ClassifyExtract, response.text)
+        assert isinstance(parsed, ClassifyExtract)
         print(f"live-smoke ok: {client.name} kind={parsed.kind}")
         return True
     except Exception as exc:

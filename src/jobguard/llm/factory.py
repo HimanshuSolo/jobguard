@@ -9,6 +9,7 @@ record/replay wrapper. Pure composition; every layer honors the same
 from __future__ import annotations
 
 from jobguard.agent.fallback import CircuitBreaker, FallbackClient
+from jobguard.agent.meter import RunMeter
 from jobguard.agent.ratelimit import RateLimiter
 from jobguard.config import Settings
 from jobguard.llm.client import LLMClient
@@ -17,7 +18,11 @@ from jobguard.llm.openai_compat import OpenAICompatClient
 from jobguard.llm.replay import RecordReplayClient
 
 
-def build_client(settings: Settings, limiter: RateLimiter | None = None) -> LLMClient:
+def build_client(
+    settings: Settings,
+    limiter: RateLimiter | None = None,
+    meter: RunMeter | None = None,
+) -> LLMClient:
     """Compose the client stack from settings (raises in DEMO_MODE for live)."""
     provider = settings.llm_provider.lower()
     if provider != "fake" and limiter is None:
@@ -36,6 +41,7 @@ def build_client(settings: Settings, limiter: RateLimiter | None = None) -> LLMC
             api_key=settings.llm_api_key,
             model=settings.llm_model,
             limiter=limiter,
+            meter=meter,
         )
     else:
         raise ValueError(f"Unknown LLM_PROVIDER {settings.llm_provider!r}")
@@ -48,6 +54,7 @@ def build_client(settings: Settings, limiter: RateLimiter | None = None) -> LLMC
             api_key=settings.llm_secondary_api_key,
             model=settings.llm_secondary_model,
             limiter=limiter,
+            meter=meter,
         )
         client = FallbackClient(
             CircuitBreaker(client, threshold=settings.llm_circuit_threshold),
@@ -61,6 +68,7 @@ def build_client(settings: Settings, limiter: RateLimiter | None = None) -> LLMC
 
 def build_pipeline_clients(
     settings: Settings,
+    meter: RunMeter | None = None,
 ) -> tuple[LLMClient, LLMClient, RateLimiter | None]:
     """Build (smart, fast, limiter) sharing one token bucket.
 
@@ -74,10 +82,18 @@ def build_pipeline_clients(
             requests_per_minute=settings.llm_max_requests_per_min,
             tokens_per_minute=settings.llm_max_tokens_per_min,
         )
-    return build_client(settings, limiter), build_fast_client(settings, limiter), limiter
+    return (
+        build_client(settings, limiter, meter),
+        build_fast_client(settings, limiter, meter),
+        limiter,
+    )
 
 
-def build_fast_client(settings: Settings, limiter: RateLimiter | None = None) -> LLMClient:
+def build_fast_client(
+    settings: Settings,
+    limiter: RateLimiter | None = None,
+    meter: RunMeter | None = None,
+) -> LLMClient:
     """Cheap client for classify/extract steps.
 
     Uses LLM_FAST_MODEL when configured, else the main model. No circuit
@@ -97,4 +113,5 @@ def build_fast_client(settings: Settings, limiter: RateLimiter | None = None) ->
         api_key=settings.llm_api_key,
         model=settings.llm_fast_model or settings.llm_model,
         limiter=limiter,
+        meter=meter,
     )
