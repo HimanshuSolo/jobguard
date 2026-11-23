@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     llm_secondary_model: str = ""
     llm_circuit_threshold: int = Field(default=3, ge=1)
     llm_call_gap_s: float = Field(
-        default=2.0,
+        default=3.0,
         ge=0.0,
         description="Politeness delay between LLM calls (free-tier rate limits).",
     )
