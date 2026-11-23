@@ -28,6 +28,41 @@ def _same_colors(style: str) -> bool:
     return len(colors) >= 2 and len(set(colors)) == 1
 
 
+_MD_LINK_LINE_RE = re.compile(r"^\s*\[.*?\]\(https?://\S+\)\s*$")
+_BARE_URL_LINE_RE = re.compile(r"^\s*https?://\S+\s*$")
+_EMPTY_MD_LINK_RE = re.compile(r"\[\]\(https?://\S+?\)")
+
+
+def _truncate_tokens(line: str, *, max_token: int, keep: int) -> str:
+    """Truncate over-long spaceless tokens in place, preserving whitespace."""
+    parts = re.split(r"(\s+)", line)
+    return "".join(
+        part[:keep] + "… [truncated]"
+        if len(part) > max_token and part.strip() == part and " " not in part
+        else part
+        for part in parts
+    )
+
+
+def collapse_boilerplate(text: str, *, max_token: int = 200, keep: int = 120) -> str:
+    """Remove tracking pixels and truncate over-long spaceless tokens.
+
+    Empty-text markdown links (``[](url)``) are tracking pixels: delete
+    them inline. Lines that are solely a long URL are redirectors: drop
+    them. Remaining spaceless monsters (tokens, IDs) are truncated in
+    place. Paragraphs survive untouched, and the original full links stay
+    available to the parsers, which run before this step.
+    """
+    text = _EMPTY_MD_LINK_RE.sub("", text)
+    out: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if len(stripped) > 120 and (_MD_LINK_LINE_RE.match(line) or _BARE_URL_LINE_RE.match(line)):
+            continue
+        out.append(_truncate_tokens(line, max_token=max_token, keep=keep))
+    return "\n".join(out)
+
+
 def strip_hidden_text(html: str) -> HiddenTextReport:
     """Remove hidden content; return cleaned text plus what was removed."""
     removed: list[str] = []
