@@ -1,0 +1,13 @@
+{
+  "version": 7,
+  "note": "Phase 7 re-baseline (deliberate): 62 earlier cases + 5 edge-sweep regressions (short-number PII, injection near-misses, uppercase URL, deadline-now boundary).",
+  "thresholds": {
+    "min_accuracy": 1.0,
+    "max_regression": 0.0
+  },
+  "metrics": {
+    "accuracy": 1.0,
+    "total": 67,
+    "passed": 67
+  }
+}
