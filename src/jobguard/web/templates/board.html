@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Board — JobGuard{% endblock %}
+{% block content %}
+<h1>Internships <span class="accent">for you.</span></h1>
+<p class="sub">{{ postings|length }} openings · ranked against your resume · scams quarantined</p>
+<form class="toolbar" method="get" action="/board" hx-get="/board" hx-target="main" hx-push-url="true">
+<input type="text" name="q" placeholder="Search role or company" value="{{ q }}">
+<select name="status">
+<option value="">any status</option>
+{% for s in ["new", "applied", "ignored"] %}
+<option value="{{ s }}" {% if s == status %}selected{% endif %}>{{ s }}</option>
+{% endfor %}
+</select>
+<label><input type="checkbox" name="intern" value="1" {% if intern %}checked{% endif %}> internships only</label>
+<label><input type="checkbox" name="hide_scam" value="1" {% if hide_scam %}checked{% endif %}> hide flagged</label>
+<button class="btn" type="submit">Filter</button>
+</form>
+<div class="grid">
+{% for p in postings %}
+<div class="card {% if p.scam_flag %}scam{% endif %}">
+<h3><a href="/postings/{{ p.id }}">{{ p.role or "Untitled role" }}</a></h3>
+<div class="meta">{{ p.company or "Unknown company" }}{% if p.location %} · {{ p.location }}{% endif %}</div>
+<p><span class="score">{{ "%.0f"|format(p.score) }}</span>
+<span class="meta"> · {{ p.status }}{% if p.scam_flag %} · <span class="flag">suspicious</span>{% endif %}</span></p>
+</div>
+{% endfor %}
+</div>
+{% if not postings %}<p class="empty">No postings match. Run a sync from Sources.</p>{% endif %}
+{% endblock %}
