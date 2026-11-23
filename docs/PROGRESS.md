@@ -258,5 +258,12 @@ Gates 2026-11-23: ruff clean, pyright 0 errors, pytest 166 passed, eval
   anchors); the pipeline quarantine path stays heuristics-only for now.
 - Digest "closing soon" has a 1-hour past-deadline grace; no-resend tokens
   prevent repeats.
+- Live 120B findings: temperature=0 + json_object + example prompts parse
+  reliably; failures were (a) Groq 429 bursts — fixed with a 3s inter-item
+  gap plus bounded retries honoring Retry-After, and (b) tracking-pixel
+  junk prefixes causing `{}` punts — fixed by stripping empty-text markdown
+  links and truncating over-long spaceless tokens pre-redaction.
+- Groq free tier here: 1000 req/~3h, tight per-minute RPM; the worker is a
+  guest on that budget, so backfills converge over runs rather than one shot.
 
 All phases complete. Awaiting your next direction.
