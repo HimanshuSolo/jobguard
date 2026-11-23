@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Eval metrics — JobGuard{% endblock %}
+{% block content %}
+<h1>Eval <span class="accent">metrics.</span></h1>
+{% if metrics %}
+<p>Accuracy: <b>{{ metrics.passed }}/{{ metrics.total }} ({{ "%.1f"|format(metrics.accuracy * 100) }}%)</b></p>
+<table class="clean">
+<tr><th>Category</th><th>Passed</th><th>Total</th><th>Accuracy</th></tr>
+{% for name, cat in metrics.categories.items() %}
+<tr><td>{{ name }}</td><td>{{ cat.passed }}</td><td>{{ cat.total }}</td><td>{{ "%.0f"|format(cat.accuracy * 100) }}%</td></tr>
+{% endfor %}
+</table>
+{% else %}
+<p class="empty">No eval run recorded yet — run <code>jobguard eval</code>.</p>
+{% endif %}
+{% endblock %}
