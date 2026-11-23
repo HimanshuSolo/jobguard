@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     llm_secondary_api_key: str = ""
     llm_secondary_model: str = ""
     llm_circuit_threshold: int = Field(default=3, ge=1)
+    llm_call_gap_s: float = Field(
+        default=2.0,
+        ge=0.0,
+        description="Politeness delay between LLM calls (free-tier rate limits).",
+    )
     llm_replay_path: str = Field(default="", description="JSONL record/replay file (CI).")
     llm_replay_mode: Literal["record", "replay"] = "record"
 

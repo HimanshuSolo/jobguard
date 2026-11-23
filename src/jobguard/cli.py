@@ -59,6 +59,7 @@ def _cmd_run_worker(_: argparse.Namespace) -> int:
 
 def _run_pipeline_stage(session: Session, settings: Settings) -> None:
     """Classify/extract/match/suggest for postings lacking suggestions."""
+    import time
     from pathlib import Path
 
     from jobguard.agent import BudgetExhausted, TokenBudget, load_profile, run_pipeline
@@ -84,9 +85,15 @@ def _run_pipeline_stage(session: Session, settings: Settings) -> None:
     done_ids = {row[0] for row in session.query(Suggestion.posting_id).all()}
     pending = session.query(Posting).filter(Posting.scam_flag.is_(False)).all()
     counts: dict[str, int] = {}
+    first = True
     for post in pending:
         if post.id in done_ids:
             continue
+        # Politeness gap: free-tier providers rate-limit bursts; the retry
+        # path handles the occasional 429, the gap prevents the storm.
+        if not first:
+            time.sleep(settings.llm_call_gap_s)
+        first = False
         try:
             result = run_pipeline(
                 post,

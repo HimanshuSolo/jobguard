@@ -26,6 +26,12 @@ def test_live_credentials_allowed_when_not_demo() -> None:
     settings.require_live_credentials()  # must not raise
 
 
+def test_llm_throttle_defaults() -> None:
+    settings = Settings()
+    assert settings.llm_call_gap_s == 2.0
+    assert settings.llm_max_tokens_per_run == 20000
+
+
 def test_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OWNER_EMAIL", "me@example.com")
     monkeypatch.setenv("DEMO_MODE", "true")
