@@ -1,0 +1,40 @@
+# Synthetic example resume — shape reference only (Phase 4 consumes this).
+# NEVER put a real resume in the repo. The real file lives at
+# data/private/resume.yaml (gitignored). Item IDs (edu-1, exp-1, ...) are what
+# tailoring suggestions must cite; anything else is labelled GAP.
+
+owner: Alex Example
+headline: Final-year B.Tech student seeking SDE internships
+contact:
+  email: alex.example@example.com
+  location: Remote / Bengaluru
+
+education:
+  - id: edu-1
+    institution: Example Institute of Technology
+    degree: B.Tech, Computer Science
+    start: "2022"
+    end: "2026"
+
+experience:
+  - id: exp-1
+    title: Web Development Intern
+    org: Example Startup
+    start: "2024-06"
+    end: "2024-08"
+    bullets:
+      - Built an internal dashboard with Python and FastAPI
+      - Wrote pytest suites covering core endpoints
+
+projects:
+  - id: proj-1
+    name: example-job-tracker
+    stack: [Python, SQLite]
+    bullets:
+      - CLI that dedupes job postings from multiple CSV exports
+
+skills:
+  - id: skill-1
+    name: Python
+  - id: skill-2
+    name: SQL
