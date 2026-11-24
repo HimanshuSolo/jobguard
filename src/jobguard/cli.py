@@ -27,7 +27,7 @@ def _cmd_init_db(_: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_run_worker(_: argparse.Namespace) -> int:
+def _cmd_run_worker(args: argparse.Namespace) -> int:
     from jobguard.ingestion import sync_source
     from jobguard.sources.configure import build_adapters, build_prefilter
     from jobguard.store import get_engine, init_db, session_factory
@@ -50,6 +50,12 @@ def _cmd_run_worker(_: argparse.Namespace) -> int:
 
     sessions = session_factory(engine)
     with sessions() as session:
+        if getattr(args, "reset_cursors", False):
+            from jobguard.store.models import RunState
+
+            dropped = session.query(RunState).delete()
+            session.commit()
+            print(f"Reset {dropped} source cursor(s): next fetch uses the lookback window.")
         for adapter in adapters:
             result = sync_source(adapter, session, prefilter)
             print(
@@ -57,6 +63,14 @@ def _cmd_run_worker(_: argparse.Namespace) -> int:
                 f"new={result.new_postings} merged={result.merged_postings} "
                 f"filtered={result.filtered_out} seen={result.skipped_seen}"
             )
+            errors = list(getattr(adapter, "errors", []) or [])
+            for error in errors[:5]:
+                print(f"  ! {error}")
+            if len(errors) > 5:
+                print(f"  ! ... and {len(errors) - 5} more")
+            skipped_mail = int(getattr(adapter, "skipped_mail", 0) or 0)
+            if skipped_mail:
+                print(f"  skipped {skipped_mail} non-alert emails (replies, OTPs, promos)")
         _run_pipeline_stage(sessions, settings)
     return 0
 
@@ -65,60 +79,37 @@ def _run_pipeline_stage(sessions: sessionmaker[Session], settings: Settings) -> 
     """Classify/extract/match/suggest for postings lacking suggestions."""
     from pathlib import Path
 
-    from jobguard.agent import TokenBudget, load_profile
-    from jobguard.ingestion import RETRYABLE_STATUSES, backfill_statuses, triage_posting
+    from jobguard.agent import TokenBudget
     from jobguard.llm.factory import build_pipeline_clients
     from jobguard.resume import load_resume
     from jobguard.store import Posting
 
+    # Phase A: local triage for everything actionable (no LLM, no sleeping).
+    # Always runs, so every posting gets a rank even without an LLM/resume.
+    from jobguard.worker import triage_stage
+
+    profile = triage_stage(sessions, settings)
+
     if settings.llm_provider.lower() == "fake":
-        print("LLM provider is 'fake'; skipping pipeline stage (set LLM_PROVIDER).")
+        print("LLM provider is 'fake'; skipping LLM stage (set LLM_PROVIDER).")
         return
     for path_attr, label in (("profile_path", "profile"), ("resume_path", "resume")):
         if not Path(str(getattr(settings, path_attr))).exists():
-            print(f"No {label} at {getattr(settings, path_attr)}; skipping pipeline stage.")
+            print(f"No {label} at {getattr(settings, path_attr)}; skipping LLM stage.")
             return
     meter = RunMeter()
     try:
         client, fast_client, _limiter = build_pipeline_clients(settings, meter)
     except (ValueError, RuntimeError) as exc:
-        print(f"LLM client unavailable ({exc}); skipping pipeline stage.")
+        print(f"LLM client unavailable ({exc}); skipping LLM stage.")
         return
     if _limiter is not None:
         _limiter.observe_waits(meter.record_sleep)
-    profile = load_profile(str(settings.profile_path))
     resume = load_resume(str(settings.resume_path))
     budget = TokenBudget(
         max_tokens=settings.llm_max_tokens_per_run,
         max_requests=settings.llm_max_requests_per_run,
     )
-    with sessions() as session:
-        backfill_statuses(session)
-
-        # Phase A: local triage for everything actionable (no LLM, no sleeping).
-        # Terminal outcomes are persisted immediately and never re-processed.
-        actionable = (
-            session.query(Posting)
-            .filter(
-                Posting.pipe_status.in_(list(RETRYABLE_STATUSES) + ["analyzing"]),
-                Posting.pipe_status.is_not(None),
-            )
-            .all()
-        )
-        triaged = {"terminal": 0, "queued": 0}
-        for post in actionable:
-            verdict = triage_posting(post, profile=profile, sender=post.sender or "")
-            if verdict.status == "queued":
-                post.cheap_score = verdict.cheap_score
-                if post.pipe_status in ("analyzing", "failed"):
-                    post.pipe_status = "queued"
-                triaged["queued"] += 1
-            else:
-                post.pipe_status = verdict.status
-                post.pipe_stage = "triaged"
-                triaged["terminal"] += 1
-        session.commit()
-        print(f"triage: {triaged} (local only, no LLM calls, no sleeping)")
 
     # Phase B: LLM loop over the bounded selection (threshold + top-N).
     # Everything else stays queued with its cheap score, explicitly
@@ -250,6 +241,7 @@ def _run_pool(
 
 def _cmd_build_digest(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime
+    from pathlib import Path
 
     from jobguard.digest import build_digest, record_sent, render_html, render_text
     from jobguard.notify import SendFailed, SendRefused, SmtpNotifier
@@ -265,10 +257,16 @@ def _cmd_build_digest(args: argparse.Namespace) -> int:
             kind=args.kind,
             best_score=settings.digest_best_score,
             urgent_hours=settings.digest_urgent_hours,
+            max_items=settings.digest_max_items,
         )
+        resume = None
+        if Path(settings.resume_path).exists():
+            from jobguard.resume import load_resume
+
+            resume = load_resume(settings.resume_path)
         subject = digest.subject
-        html_body = render_html(session, digest)
-        text_body = render_text(session, digest)
+        html_body = render_html(session, digest, resume)
+        text_body = render_text(session, digest, resume)
         if args.dry_run:
             print(subject)
             print(text_body)
@@ -280,6 +278,14 @@ def _cmd_build_digest(args: argparse.Namespace) -> int:
             print("SMTP not configured; digest built but not sent (nothing recorded).")
             print(text_body)
             return 0
+        owner = settings.owner_email.strip().casefold()
+        friends = tuple(
+            dict.fromkeys(
+                e.strip()
+                for e in settings.digest_recipients.split(",")
+                if "@" in e and e.strip().casefold() != owner
+            )
+        )
         notifier = SmtpNotifier(
             host=settings.sender_smtp_host,
             port=settings.sender_smtp_port,
@@ -288,6 +294,7 @@ def _cmd_build_digest(args: argparse.Namespace) -> int:
             from_address=settings.sender_from_address or settings.sender_smtp_user,
             owner_email=settings.owner_email,
             max_per_day=settings.sender_max_per_day,
+            extra_recipients=friends,
         )
         try:
             notifier.send(
@@ -301,6 +308,19 @@ def _cmd_build_digest(args: argparse.Namespace) -> int:
             print(f"Digest not sent: {exc}")
             return 1
         digest_id = f"{args.kind}:{datetime.now(UTC).strftime('%Y-%m-%d')}"
+        # Friends get their own copy (addresses never shared), job list only:
+        # no resume notes or approvals. A failed copy never blocks the owner's.
+        if friends and args.kind != "urgent":
+            shared_html = render_html(session, digest, personal=False)
+            shared_text = render_text(session, digest, personal=False)
+            for friend in friends:
+                try:
+                    notifier.send(
+                        session, to=friend, subject=subject, html=shared_html, text=shared_text
+                    )
+                    print(f"Sent copy to {friend}.")
+                except (SendRefused, SendFailed) as exc:
+                    print(f"Copy to {friend} not sent: {exc}")
         record_sent(session, digest_id, digest)
         print(f"Sent {args.kind} digest ({len(digest.tokens)} items) to {settings.owner_email}.")
     return 0
@@ -465,6 +485,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.set_defaults(func=_cmd_eval)
 
     p_worker = sub.add_parser("run-worker", help="Sync all configured sources into the DB.")
+    p_worker.add_argument(
+        "--reset-cursors",
+        action="store_true",
+        help="Forget per-source cursors first (backfill using the lookback window).",
+    )
     p_worker.set_defaults(func=_cmd_run_worker)
 
     p_status = sub.add_parser("status", help="Honest pipeline progress report.")
