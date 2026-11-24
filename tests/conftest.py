@@ -32,4 +32,8 @@ def _isolate_settings_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     )
     for field in Settings.model_fields:
         monkeypatch.delenv(field.upper(), raising=False)
+    # The default Gmail paths point at data/private/, which holds a real
+    # token on a developer machine; a token alone now enables Gmail.
+    monkeypatch.setenv("GMAIL_TOKEN_PATH", str(tmp_path / "no-gmail-token.json"))
+    monkeypatch.setenv("GMAIL_CLIENT_SECRET", str(tmp_path / "no-gmail-secret.json"))
     get_settings.cache_clear()
