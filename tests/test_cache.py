@@ -196,3 +196,93 @@ def test_cache_hit_skips_budget_charge(tmp_path: Path) -> None:
         assert result.status == "suggested"
         assert tiny.used_tokens == 0
         assert session.query(LLMCache).count() == 1
+
+
+def test_interrupted_run_resumes_without_duplicates(tmp_path: Path) -> None:
+    """Budget exhaustion mid-run stops intake; a rerun (after the worker's
+    triage resets interrupted items to queued) finishes everything from
+    cache with zero new calls and exactly one suggestion per posting."""
+    from jobguard.cli import _run_pool
+    from jobguard.ingestion import RETRYABLE_STATUSES, triage_posting
+
+    sessions = _sessions(tmp_path)
+    profile, resume = _env()
+    with sessions() as session:
+        # Distinct links: distinct match-stage content, so each item really
+        # spends budget (identical rows would all hit one cache entry).
+        ids = []
+        for i in range(3):
+            post = _posting(session, i)
+            post.link = f"https://acme.example/j/{i}"
+            session.commit()
+            ids.append(post.id)
+
+    first = _match_client()
+    run1 = _run_pool(
+        session_factory=sessions,
+        posting_ids=ids,
+        client=first,
+        fast_client=first,
+        profile=profile,
+        resume=resume,
+        budget=TokenBudget(max_tokens=10**9, max_requests=1),
+        max_input_chars=3000,
+        max_workers=1,
+    )
+    assert run1 == {"suggested": 1}
+    # Budget is charged after each call lands, so every item attempted its
+    # call; only the first could be spent, the rest raised BudgetExhausted
+    # (and — the raise precedes parsing — cached nothing).
+    assert len(first.calls) == 3
+
+    # Worker rerun: triage first (resets analyzing/failed to queued) ...
+    with sessions() as session:
+        actionable = (
+            session.query(Posting)
+            .filter(
+                Posting.pipe_status.in_(list(RETRYABLE_STATUSES) + ["analyzing"]),
+                Posting.pipe_status.is_not(None),
+            )
+            .all()
+        )
+        for post in actionable:
+            verdict = triage_posting(post, profile=profile, sender="")
+            if verdict.status == "queued":
+                post.cheap_score = verdict.cheap_score
+                if post.pipe_status in ("analyzing", "failed"):
+                    post.pipe_status = "queued"
+            else:
+                post.pipe_status = verdict.status
+        session.commit()
+        queued_ids = [
+            p.id
+            for p in session.query(Posting)
+            .filter(Posting.pipe_status == "queued")
+            .order_by(Posting.id)
+            .all()
+        ]
+    assert len(queued_ids) == 2
+
+    # ... then the pool finishes the rest with fresh calls (run 1 cached
+    # nothing: the budget raise precedes parsing and storing).
+    second = _match_client()
+    run2 = _run_pool(
+        session_factory=sessions,
+        posting_ids=queued_ids,
+        client=second,
+        fast_client=second,
+        profile=profile,
+        resume=resume,
+        budget=TokenBudget(max_tokens=10**9),
+        max_input_chars=3000,
+        max_workers=1,
+    )
+    assert run2 == {"suggested": 2}
+    assert len(second.calls) == 2
+    with sessions() as session:
+        assert session.query(Suggestion).count() == 3
+        for pid in ids:
+            assert (
+                session.query(Suggestion).filter(Suggestion.posting_id == pid).count()
+                == 1
+            )
