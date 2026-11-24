@@ -1,12 +1,13 @@
 {% extends "base.html" %}
-{% block title %}Review approval — JobGuard{% endblock %}
+{% set active = "/approvals" %}
+{% block title %}Review approval · JobGuard{% endblock %}
 {% block content %}
-<h1>Review <span class="accent">approval #{{ action.id }}.</span></h1>
+<h1>Approval #{{ action.id }}</h1>
 <p class="sub">Risk: {{ action.risk }} · expires {{ action.expires_at }}</p>
-<div class="detail"><pre>{{ action.plan }}</pre></div>
-<form method="post" action="/approvals/{{ token }}" style="margin-top:1rem">
+<div class="panel"><pre>{{ action.plan }}</pre></div>
+<form class="actions" method="post" action="/approvals/{{ token }}">
 <input type="hidden" name="csrf" value="{{ csrf }}">
-<button class="btn" type="submit" name="decision" value="approve">Approve &amp; execute</button>
-<button class="btn btn-warm" type="submit" name="decision" value="reject">Reject</button>
+<button class="btn btn-primary" type="submit" name="decision" value="approve">Approve &amp; run</button>
+<button class="btn" type="submit" name="decision" value="reject">Reject</button>
 </form>
 {% endblock %}
