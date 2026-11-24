@@ -37,18 +37,45 @@ def build_adapters(settings: Settings) -> tuple[list[SourceAdapter], list[str]]:
         feed_domains = list({urlparse(f.url).hostname or "" for f in feeds} - {""})
         adapters.append(RssAdapter(feeds=feeds, allowed_domains=feed_domains))
 
-    if settings.gmail_client_secret and Path(settings.gmail_client_secret).exists():
+    has_token = bool(settings.gmail_token_path) and Path(settings.gmail_token_path).exists()
+    has_secret = bool(settings.gmail_client_secret) and Path(settings.gmail_client_secret).exists()
+    if has_token or has_secret:
         try:
             from jobguard.sources import build_gmail_service
 
             service = build_gmail_service(settings.gmail_client_secret, settings.gmail_token_path)
-            adapters.append(GmailAlertAdapter(GmailApiMailSource(service)))
-        except FileNotFoundError as exc:
-            skipped.append(f"Gmail skipped: {exc}")
+            adapters.append(
+                GmailAlertAdapter(
+                    GmailApiMailSource(
+                        service,
+                        settings.gmail_query,
+                        lookback_days=settings.gmail_lookback_days,
+                        max_messages=settings.gmail_max_messages,
+                    )
+                )
+            )
+        except Exception as exc:  # bad/expired token must not stop other sources
+            skipped.append(f"Gmail skipped: {type(exc).__name__}: {exc}")
     else:
         skipped.append(
-            "Gmail skipped: no client secret file "
-            "(set GMAIL_CLIENT_SECRET=data/private/gmail_client_secret.json)."
+            "Gmail skipped: no token or client secret "
+            f"({settings.gmail_token_path} / {settings.gmail_client_secret})."
+        )
+
+    if settings.adzuna_app_id and settings.adzuna_app_key:
+        from jobguard.sources.adzuna import AdzunaAdapter
+
+        adapters.append(
+            AdzunaAdapter(
+                app_id=settings.adzuna_app_id,
+                app_key=settings.adzuna_app_key,
+                queries=[q.strip() for q in settings.adzuna_queries.split(",") if q.strip()],
+                max_days_old=settings.adzuna_max_days_old,
+            )
+        )
+    else:
+        skipped.append(
+            "Adzuna skipped: set ADZUNA_APP_ID / ADZUNA_APP_KEY for India-wide coverage."
         )
 
     if (
@@ -72,7 +99,19 @@ def build_prefilter(settings: Settings) -> Prefilter:
     # so an eager import here would be circular.
     from jobguard.ingestion import Prefilter
 
-    return Prefilter.from_settings(settings.prefilter_keywords, settings.prefilter_senders)
+    extra: list[str] = []
+    if settings.profile_path and Path(settings.profile_path).exists():
+        from jobguard.agent.rank import load_profile
+
+        extra = [loc for loc in load_profile(settings.profile_path).locations if loc.strip()]
+    return Prefilter.from_settings(
+        settings.prefilter_keywords,
+        settings.prefilter_senders,
+        location_scope=settings.location_scope,
+        extra_locations=extra,
+        role_level=settings.role_level,
+        grad_year=settings.grad_year,
+    )
 
 
 def adapter_status(settings: Settings) -> list[dict[str, Any]]:
