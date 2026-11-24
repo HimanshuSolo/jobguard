@@ -84,7 +84,9 @@ class _FakeClock:
 class _ThrottledFake(FakeClient):
     """Fake client behind a limiter, with virtual per-call network latency."""
 
-    def __init__(self, limiter: RateLimiter, clock: _FakeClock, *args: object, **kwargs: object) -> None:
+    def __init__(
+        self, limiter: RateLimiter, clock: _FakeClock, *args: object, **kwargs: object
+    ) -> None:
         super().__init__(*args, **kwargs)  # type: ignore[arg-type]
         self._limiter = limiter
         self._clock = clock
@@ -200,7 +202,7 @@ def test_300_item_virtual_time_old_vs_new(tmp_path: Path) -> None:
     profile = Profile(skills=["Python", "Go"], role_types=["SDE"], locations=["Remote"])
     resume = Resume(owner="T", items=[ResumeItem(id="exp-1", title="Intern")])
 
-    by_kind = _seed(sessions)
+    _seed(sessions)
     queued, triage_counts = _triage_all(sessions, profile)
 
     # Triage partitioned the mix exactly as specified: only genuinely
