@@ -1,4 +1,4 @@
-"""Dashboard: FastAPI + Jinja/HTMX, single-user login (Phase 6).
+"""Dashboard: FastAPI + Jinja, single-user login via Clerk (or password).
 
 Pages: login, postings board (filterable), posting detail with tailoring
 card, approvals (list + confirm + POST-only decide), audit log, eval
@@ -13,6 +13,7 @@ import json
 import time
 from collections import defaultdict
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -38,20 +39,44 @@ from jobguard.web.auth import (
     verify_password,
     verify_session,
 )
+from jobguard.web.clerk import ClerkAuth, ClerkConfig, ClerkResult
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 LOGIN_RATE_LIMIT = 10
+BOARD_PAGE_SIZE = 40
 LOGIN_WINDOW_S = 300
 
 _login_attempts: defaultdict[str, list[float]] = defaultdict(list)
 
 
-def _templates() -> Environment:
-    return Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=True)
+def _safe_url(value: object) -> str:
+    """Only http(s) links reach an href (alert emails are untrusted)."""
+    text = str(value or "").strip()
+    return text if text.lower().startswith(("https://", "http://")) else ""
 
 
-def _render(name: str, **ctx: object) -> HTMLResponse:
-    return HTMLResponse(_templates().get_template(name).render(**ctx))
+def _asset_version() -> str:
+    """Short hash of the static files, appended as ?v= to their URLs."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    for path in sorted((TEMPLATES_DIR.parent / "static").glob("*")):
+        if path.is_file():
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:10]
+
+
+def _make_env() -> Environment:
+    from jobguard.digest.builder import effective_score, posted_label
+
+    env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=True)
+    env.filters["safe_url"] = _safe_url
+    env.filters["posted"] = posted_label
+    env.filters["score"] = lambda p: f"{effective_score(p):.0f}"
+    env.filters["scoreval"] = lambda p: max(0, min(100, round(effective_score(p))))
+    env.filters["initial"] = lambda name: (str(name or "?").strip()[:1] or "?").upper()
+    env.filters["hue"] = lambda name: sum(ord(c) for c in str(name or "")) * 47 % 360
+    return env
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -64,7 +89,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="JobGuard", docs_url=None, redoc_url=None, openapi_url=None)
     app.mount("/static", StaticFiles(directory=str(TEMPLATES_DIR.parent / "static")), name="static")
 
+    clerk_config = ClerkConfig.from_settings(settings)
+    clerk = ClerkAuth(clerk_config) if clerk_config else None
+    env = _make_env()
+    env.globals["clerk"] = {
+        "enabled": clerk_config is not None,
+        "publishable_key": clerk_config.publishable_key if clerk_config else "",
+        "script_url": clerk_config.script_url if clerk_config else "",
+        "ui_script_url": clerk_config.ui_script_url if clerk_config else "",
+    }
+    # Cache-busting: browsers kept serving the old stylesheet after redesigns.
+    env.globals["asset_v"] = _asset_version()
+
+    def _render(name: str, status_code: int = 200, **ctx: object) -> HTMLResponse:
+        return HTMLResponse(env.get_template(name).render(**ctx), status_code=status_code)
+
+    def clerk_state(request: Request) -> ClerkResult:
+        cached = getattr(request.state, "clerk", None)
+        if isinstance(cached, ClerkResult):
+            return cached
+        assert clerk is not None
+        result = clerk.verify_cookies(dict(request.cookies))
+        request.state.clerk = result
+        return result
+
     def current_user(request: Request) -> str | None:
+        if clerk is not None:
+            result = clerk_state(request)
+            return (result.email or result.user_id) if result.status == "ok" else None
         value = request.cookies.get(SESSION_COOKIE, "")
         if value and verify_session(
             value, settings.dashboard_username, settings.dashboard_secret_key
@@ -72,32 +124,99 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return settings.dashboard_username
         return None
 
-    def need_login(request: Request) -> RedirectResponse | None:
-        if current_user(request) is None:
-            return RedirectResponse("/login", status_code=303)
-        return None
+    def gate(request: Request, mode: str = "sign-in") -> HTMLResponse:
+        """Clerk sign-in/up page; retries the original page once clerk-js has
+        refreshed the (60 s) session cookie."""
+        result = clerk_state(request)
+        retry = request.url.path if request.method == "GET" else "/board"
+        if request.method == "GET" and request.url.query:
+            retry += "?" + request.url.query
+        if retry.split("?")[0] in ("/login", "/sign-up", "/"):
+            retry = "/board"
+        status = 403 if result.status == "forbidden" else 401
+        if request.url.path in ("/login", "/sign-up"):
+            status = 403 if result.status == "forbidden" else 200
+        return _render(
+            "auth_gate.html",
+            status_code=status,
+            mode=mode,
+            state=result.status,
+            reason=result.reason,
+            user_id=result.user_id,
+            retry_url=retry,
+        )
+
+    def need_login(request: Request) -> HTMLResponse | RedirectResponse | None:
+        if current_user(request) is not None:
+            return None
+        if clerk is not None:
+            return gate(request)
+        return RedirectResponse("/login", status_code=303)
+
+    def csrf_for(request: Request) -> str:
+        """The request's CSRF token, minting one (cookie set on the way out)."""
+        token = request.cookies.get(CSRF_COOKIE, "") or getattr(request.state, "new_csrf", "")
+        if not token:
+            token = new_csrf_token()
+            request.state.new_csrf = token
+        return token
 
     def csrf_ok(request: Request, field: str) -> bool:
         return bool(field) and field == request.cookies.get(CSRF_COOKIE, "")
+
+    csp = {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data:",
+        "connect-src": "'self'",
+        "frame-ancestors": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'self'",
+    }
+    if clerk_config is not None:
+        for directive, extra in clerk_config.csp_sources().items():
+            csp[directive] = f"{csp.get(directive, '')} {extra}".strip()
+        csp["worker-src"] = "'self' blob:"
+    csp_header = "; ".join(f"{k} {v}" for k, v in csp.items())
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next: object) -> object:
         response = await call_next(request)  # type: ignore[operator]
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self' https://unpkg.com; "
-            "style-src 'self' 'unsafe-inline'"
-        )
+        response.headers["Referrer-Policy"] = "same-origin"
+        response.headers["Content-Security-Policy"] = csp_header
+        new_csrf = getattr(request.state, "new_csrf", "")
+        if new_csrf:
+            response.set_cookie(CSRF_COOKIE, new_csrf, samesite="lax", max_age=86400)
         return response
 
+    @app.get("/healthz")
+    def healthz() -> dict[str, str]:
+        """Unauthenticated liveness probe (no data)."""
+        return {"status": "ok"}
+
     @app.get("/login", response_class=HTMLResponse)
-    def login_form() -> HTMLResponse:
+    def login_form(request: Request) -> object:
+        if clerk is not None:
+            if current_user(request) is not None:
+                return RedirectResponse("/board", status_code=303)
+            return gate(request)
         return _render("login.html", error="")
+
+    @app.get("/sign-up", response_class=HTMLResponse)
+    def sign_up(request: Request) -> object:
+        if clerk is None:
+            return RedirectResponse("/login", status_code=303)
+        if current_user(request) is not None:
+            return RedirectResponse("/board", status_code=303)
+        return gate(request, mode="sign-up")
 
     @app.post("/login")
     def login(request: Request, username: str = Form(""), password: str = Form("")) -> object:
+        if clerk is not None:
+            return RedirectResponse("/login", status_code=303)
         ip = request.client.host if request.client else "unknown"
         now = time.time()
         attempts = [t for t in _login_attempts[ip] if now - t < LOGIN_WINDOW_S]
@@ -124,6 +243,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/logout")
     def logout() -> RedirectResponse:
+        # Clerk sessions are ended client-side (Clerk.signOut); this clears ours.
         response = RedirectResponse("/login", status_code=303)
         response.delete_cookie(SESSION_COOKIE)
         response.delete_cookie(CSRF_COOKIE)
@@ -137,33 +257,147 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/board", response_class=HTMLResponse)
     def board(
-        request: Request, status: str = "", hide_scam: str = "", intern: str = "1", q: str = ""
+        request: Request,
+        view: str = "all",
+        hide_scam: str = "",
+        q: str = "",
+        show_all: str = "",
+        sort: str = "newest",
+        page: int = 1,
     ) -> object:
         if (redirect := need_login(request)) is not None:
             return redirect
+        from datetime import UTC, datetime
+
+        from jobguard.digest.builder import HIDDEN_STATUSES, effective_score, posted_or_arrived
+
+        def _on(value: str) -> bool:
+            return value.strip().lower() not in ("", "0", "false", "no")
+
         with sessions() as session:
-            query = session.query(Posting).order_by(Posting.score.desc())
-            if status in ("new", "applied", "ignored"):
-                query = query.filter_by(status=status)
-
-            def _on(value: str) -> bool:
-                return value.strip().lower() not in ("", "0", "false", "no")
-
-            postings = query.all()
-            if _on(hide_scam):
-                postings = [p for p in postings if not p.scam_flag]
-            if _on(intern):
-                postings = [p for p in postings if "intern" in (p.role or "").casefold()]
-            if q.strip():
-                needle = q.strip().casefold()
-                postings = [
-                    p
-                    for p in postings
-                    if needle in (p.role or "").casefold() or needle in (p.company or "").casefold()
-                ]
-        return _render(
-            "board.html", postings=postings, status=status, hide_scam=hide_scam, intern=intern, q=q
+            everything = session.query(Posting).all()
+        listed = (
+            everything
+            if _on(show_all)
+            else [p for p in everything if p.pipe_status not in HIDDEN_STATUSES]
         )
+        now = datetime.now(UTC).replace(tzinfo=None)
+
+        def age_days(p: Posting) -> int:
+            return max(0, (now - posted_or_arrived(p)).days)
+
+        def is_remote(p: Posting) -> bool:
+            return "remote" in (p.location or "").casefold()
+
+        stats = {
+            "open": sum(1 for p in listed if p.status != "ignored"),
+            "week": sum(1 for p in listed if age_days(p) <= 7 and p.status != "ignored"),
+            "applied": sum(1 for p in listed if p.status == "applied"),
+            "analyzed": sum(1 for p in listed if p.pipe_status == "done"),
+        }
+        view = view if view in ("all", "week", "remote", "applied", "ignored") else "all"
+        views = {
+            "all": lambda p: p.status != "ignored",
+            "week": lambda p: age_days(p) <= 7 and p.status != "ignored",
+            "remote": lambda p: is_remote(p) and p.status != "ignored",
+            "applied": lambda p: p.status == "applied",
+            "ignored": lambda p: p.status == "ignored",
+        }
+        postings = [p for p in listed if views[view](p)]
+        if _on(hide_scam):
+            postings = [p for p in postings if not p.scam_flag]
+        if q.strip():
+            needle = q.strip().casefold()
+            postings = [
+                p
+                for p in postings
+                if needle in (p.role or "").casefold()
+                or needle in (p.company or "").casefold()
+                or needle in (p.location or "").casefold()
+            ]
+        sort = sort if sort in ("newest", "match") else "newest"
+        if sort == "match":
+            postings.sort(key=lambda p: (effective_score(p), posted_or_arrived(p)), reverse=True)
+        else:
+            postings.sort(key=lambda p: (posted_or_arrived(p), effective_score(p)), reverse=True)
+        total = len(postings)
+        pages = max(1, -(-total // BOARD_PAGE_SIZE))
+        page = min(max(1, page), pages)
+        shown = postings[(page - 1) * BOARD_PAGE_SIZE : page * BOARD_PAGE_SIZE]
+
+        # Newest-first lists read best grouped by posting age.
+        groups: list[tuple[str, list[Posting]]] = []
+        for post in shown:
+            if sort == "match":
+                label = "Best match first"
+            else:
+                days = age_days(post)
+                label = (
+                    "Today"
+                    if days == 0
+                    else "Yesterday"
+                    if days == 1
+                    else "This week"
+                    if days <= 7
+                    else "This month"
+                    if days <= 31
+                    else "Older"
+                )
+            if not groups or groups[-1][0] != label:
+                groups.append((label, []))
+            groups[-1][1].append(post)
+
+        base = {"q": q, "sort": sort, "hide_scam": hide_scam, "show_all": show_all}
+        base = {k: v for k, v in base.items() if v and not (k == "sort" and v == "newest")}
+
+        def link(**changes: object) -> str:
+            params = {**base, "view": view, **changes}
+            params = {k: v for k, v in params.items() if v and not (k == "view" and v == "all")}
+            return "/board" + (f"?{urlencode(params)}" if params else "")
+
+        return _render(
+            "board.html",
+            groups=groups,
+            total=total,
+            stats=stats,
+            page=page,
+            pages=pages,
+            prev_url=link(page=page - 1) if page > 1 else "",
+            next_url=link(page=page + 1) if page < pages else "",
+            view_urls={name: link(view=name, page="") for name in views},
+            view=view,
+            hide_scam=hide_scam,
+            q=q,
+            show_all=show_all,
+            sort=sort,
+            csrf=csrf_for(request),
+        )
+
+    @app.post("/postings/{posting_id}/status")
+    def set_status(
+        request: Request, posting_id: int, value: str = Form(""), csrf: str = Form("")
+    ) -> object:
+        if (redirect := need_login(request)) is not None:
+            return redirect
+        if not csrf_ok(request, csrf):
+            return _render("result.html", title="Rejected", message="CSRF check failed.")
+        if value not in ("new", "applied", "ignored"):
+            return _render("result.html", title="Rejected", message="Unknown status.")
+        with sessions() as session:
+            post = session.get(Posting, posting_id)
+            if post is None:
+                return _render("result.html", title="Not found", message="No such posting.")
+            post.status = value
+            session.commit()
+        back = request.headers.get("referer", "")
+        target = f"/postings/{posting_id}"
+        if back:
+            from urllib.parse import urlsplit
+
+            parts = urlsplit(back)
+            if parts.netloc == request.url.netloc and parts.path == "/board":
+                target = parts.path + (f"?{parts.query}" if parts.query else "")
+        return RedirectResponse(target, status_code=303)
 
     def render_detail(posting_id: int, notice: str, csrf_token: str) -> HTMLResponse:
         from jobguard.resume import keyword_gap, load_resume
@@ -200,7 +434,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def posting_detail(request: Request, posting_id: int) -> object:
         if (redirect := need_login(request)) is not None:
             return redirect
-        return render_detail(posting_id, "", request.cookies.get(CSRF_COOKIE, ""))
+        return render_detail(posting_id, "", csrf_for(request))
 
     @app.post("/postings/{posting_id}/analyze", response_class=HTMLResponse)
     def analyze_now(request: Request, posting_id: int, csrf: str = Form("")) -> object:
@@ -215,7 +449,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             f"Analyze: {result.outcome} (status={result.status or '-'}; "
             f"{result.detail}; llm_calls={result.llm_calls})."
         )
-        return render_detail(posting_id, notice, request.cookies.get(CSRF_COOKIE, ""))
+        return render_detail(posting_id, notice, csrf_for(request))
 
     @app.get("/approvals", response_class=HTMLResponse)
     def approvals(request: Request) -> object:
@@ -250,11 +484,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
         # Read-only GET: hand the bearer a CSRF cookie so their later POST
         # validates. Scanners only GET, so they can never trigger execution.
-        csrf = request.cookies.get(CSRF_COOKIE, "") or new_csrf_token()
-        response = confirm_page(token, action, csrf)
-        if not request.cookies.get(CSRF_COOKIE):
-            response.set_cookie(CSRF_COOKIE, csrf, samesite="lax", max_age=86400)
-        return response
+        return confirm_page(token, action, csrf_for(request))
 
     @app.get("/approvals/by-id/{action_id}", response_class=HTMLResponse)
     def approval_by_id(request: Request, action_id: int) -> object:
@@ -269,7 +499,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "approval_confirm.html",
             action=action,
             token=f"id:{action_id_value}",
-            csrf=request.cookies.get(CSRF_COOKIE, ""),
+            csrf=csrf_for(request),
         )
 
     def execute(token: str, decision: str, csrf_field: str, request: Request) -> object:
@@ -320,7 +550,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             adapters=adapter_status(settings),
             recent=recent,
             result="",
-            csrf=request.cookies.get(CSRF_COOKIE, ""),
+            csrf=csrf_for(request),
         )
 
     @app.post("/sync")
@@ -344,6 +574,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             lines.extend(skipped)
             session.commit()
+        from jobguard.worker import triage_stage
+
+        triage_stage(sessions, settings)
+        with sessions() as session:
             recent = session.query(AuditLog).order_by(AuditLog.id.desc()).limit(15).all()
         from jobguard.sources.configure import adapter_status
 
@@ -352,7 +586,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             adapters=adapter_status(settings),
             recent=recent,
             result="Sync done — " + "; ".join(lines),
-            csrf=request.cookies.get(CSRF_COOKIE, ""),
+            csrf=csrf_for(request),
         )
 
     @app.get("/resume", response_class=HTMLResponse)
@@ -370,7 +604,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resume=resume,
             message=message,
             error=error,
-            csrf=request.cookies.get(CSRF_COOKIE, ""),
+            csrf=csrf_for(request),
         )
 
     @app.post("/resume")
