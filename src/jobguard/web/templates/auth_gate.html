@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% if mode == "sign-up" %}Create account{% else %}Sign in{% endif %} · JobGuard</title>
+<link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
+<script defer crossorigin="anonymous" src="{{ clerk.ui_script_url }}"></script>
+<script defer crossorigin="anonymous" data-clerk-publishable-key="{{ clerk.publishable_key }}" src="{{ clerk.script_url }}"></script>
+<script defer src="/static/clerk.js?v={{ asset_v }}"></script>
+</head>
+<body class="auth-body">
+<main class="auth">
+<div class="auth-col" id="clerk-gate" data-state="{{ state }}" data-mode="{{ mode }}" data-retry="{{ retry_url }}">
+<header class="auth-head">
+<a class="auth-brand" href="/board"><span class="auth-mark" aria-hidden="true"></span>JobGuard</a>
+<p class="auth-tag">Developer internships across India, in one morning email.</p>
+</header>
+{% if state == "forbidden" %}
+<section class="auth-panel">
+<h1>No access</h1>
+<p class="meta">This account isn't allowed into this dashboard{% if reason %} ({{ reason }}){% endif %}.</p>
+{% if user_id %}<p class="meta">Clerk user id: <code>{{ user_id }}</code></p>{% endif %}
+<button type="button" class="btn btn-primary btn-block" id="signout">Sign out and switch account</button>
+</section>
+{% else %}
+<div id="clerk-mount" class="clerk-mount">
+<div class="auth-panel auth-loading" id="gate-msg">Loading…</div>
+</div>
+<noscript><p class="error">Sign-in needs JavaScript.</p></noscript>
+{% endif %}
+<p class="auth-foot">Private dashboard. Only the owner's account can open it.</p>
+</div>
+</main>
+</body>
+</html>

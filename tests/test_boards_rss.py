@@ -60,7 +60,12 @@ def test_lever_mapping() -> None:
     assert first.payload["published"].startswith("2026-")
 
 
-def test_boards_since_filters() -> None:
+def test_boards_are_snapshots_ignoring_since() -> None:
+    """Boards return everything every time; emails_seen gives idempotency.
+
+    A date cursor used to drop every job on a newly added board whose
+    publish date predated the last run.
+    """
     adapter = BoardFeedAdapter(
         boards=[
             BoardSpec(provider="greenhouse", slug="example-co", company="Example Co"),
@@ -69,9 +74,59 @@ def test_boards_since_filters() -> None:
         client=_fixture_client(),
         resolve=lambda host: ["93.184.216.34"],
     )
-    items = adapter.fetch("2026-11-21")
-    # Only the Lever posting published 2026-11-21 survives the cutoff.
-    assert [i.external_id for i in items] == ["aaa-111"]
+    assert len(adapter.fetch("2099-01-01")) == len(adapter.fetch("")) == 4
+
+
+def test_one_failing_board_does_not_hide_the_others() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "broken" in request.url.path:
+            return httpx.Response(500, content=b"boom")
+        return httpx.Response(200, content=(FIXTURES / "boards" / "lever.json").read_bytes())
+
+    adapter = BoardFeedAdapter(
+        boards=[
+            BoardSpec(provider="greenhouse", slug="broken", company="Broken"),
+            BoardSpec(provider="lever", slug="example-labs", company="Example Labs"),
+        ],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        resolve=lambda host: ["93.184.216.34"],
+    )
+    items = adapter.fetch("")
+    assert {i.source for i in items} == {"board:lever:example-labs"}
+    assert adapter.errors and adapter.errors[0].startswith("greenhouse:broken")
+
+
+def test_ashby_mapping() -> None:
+    payload = {
+        "jobs": [
+            {
+                "id": "u-1",
+                "title": "Software Engineer Intern",
+                "location": "Bengaluru",
+                "secondaryLocations": [{"location": "Remote - India"}],
+                "isListed": True,
+                "isRemote": False,
+                "jobUrl": "https://jobs.ashbyhq.com/acme/u-1",
+                "descriptionPlain": "Python, FastAPI",
+                "publishedAt": "2026-11-20T10:00:00+00:00",
+            },
+            {"id": "u-2", "title": "Hidden", "isListed": False},
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "api.ashbyhq.com"
+        return httpx.Response(200, content=json.dumps(payload).encode())
+
+    adapter = BoardFeedAdapter(
+        boards=[BoardSpec(provider="ashby", slug="acme", company="Acme")],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        resolve=lambda host: ["93.184.216.34"],
+    )
+    items = adapter.fetch("")
+    assert [i.external_id for i in items] == ["u-1"]
+    assert items[0].payload["location"] == "Bengaluru; Remote - India"
+    assert items[0].payload["description_text"] == "Python, FastAPI"
 
 
 def test_load_boards_missing_file() -> None:

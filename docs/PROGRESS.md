@@ -248,6 +248,95 @@ regressions (67 cases total).
 Gates 2026-11-23: ruff clean, pyright 0 errors, pytest 166 passed, eval
 67/67 vs baseline v7.
 
+## Phase 9 — perf/fast-pipeline (in progress, STOP-LIST active)
+
+Branch `perf/fast-pipeline`, one commit per item, never push to main. No
+live LLM calls (fake/replay + fake clock); no email/digest/backfill until
+the approved canary. Diagnosis lives in `docs/PERF_REPORT.md`.
+
+- 2.1 per-item status: `pipe_status`/`pipe_stage`/`cheap_score` on
+  postings, `backfill_statuses` migration helper, `jobguard status`
+  (scored/eligible/skipped-by-reason/queued/expired/failed).
+- 2.2 local-first triage: two-phase worker — sender/label allowlist,
+  parse, dedupe, keyword prefilter, PII redaction, guardrails, expiry,
+  cheap score for ALL items with zero LLM calls and zero sleeping; LLM
+  only for the bounded selection.
+- 2.3 token-bucket limiter (`agent/ratelimit.py`, fake clock/sleeper):
+  requests/min + tokens/min from config, `note_retry_after` honors
+  provider Retry-After globally; fixed 3s sleep removed.
+- 2.4 fewer calls: template-parsed postings skip classify; extract runs
+  only when parser fields are missing; match+suggest merged into one
+  `MatchAndSuggest` call; LLM only for cheap-score >= threshold then
+  intern-first, nearest-deadline, newest, top-N (default 30).
+- 2.5 smaller prompts: cached compact resume summary (item IDs kept),
+  boilerplate collapse, `llm_max_input_chars` truncation per call.
+- 2.6 model tiering: `build_pipeline_clients` returns (smart, fast,
+  shared limiter); `LLM_FAST_MODEL` for classify/extract, smart model
+  for match+suggest; no breaker/fallback on the fast path by design.
+- 2.7 bounded pool: `_run_pool` (ThreadPoolExecutor, default 2 workers,
+  `LLM_WORKERS` 1-8) — one session per item, ids only across threads;
+  shared limiter + breaker + fallback chain inside the client stack;
+  `BudgetExhausted` re-raised through pipeline stages so a spent budget
+  stops intake (in-flight items finish, cancelled futures stay queued).
+  Retry-After honored at the client layer (`note_retry_after` + bounded
+  retries); covered by `tests/test_ratelimit.py`.
+- Contract change (item 7): `BudgetExhausted` now propagates out of
+  `run_pipeline` instead of being swallowed into "skipped"/"failed".
+  Swallowing let a spent budget masquerade as item failures and kept the
+  pool consuming intake; propagation lets the pool stop and leave items
+  queued (old `test_budget_exhaustion_skips` updated to
+  `test_budget_exhaustion_propagates`).
+- 2.8 LLM cache + checkpoints: `llm_cache` table keyed by
+  sha256(model family, prompt version, cleaned content); only validated
+  responses stored; hits make zero calls, skip budget charge, and audit
+  `pipeline.cache_hit`. `PROMPT_VERSION` bump invalidates everything.
+  `pipe_stage` stays the checkpoint marker; reruns replay finished stages
+  from cache (no duplicates). `cache_put` commits immediately under a
+  process-wide lock — two workers serving identical content raced on
+  check-then-insert (UNIQUE failure, found by the pool tests).
+- 2.9 priority/expiry/on-demand: `select_for_llm` order is now
+  intern-first, nearest upcoming deadline (deadline-less last), newest;
+  cheap score stays the eligibility gate, not the order. Expiry needs no
+  LLM and was already terminal in triage (re-triaged every run, so
+  deadlines that pass while queued are caught). On-demand
+  `agent/analyze.py` core (local triage, then one `run_pipeline`, refused
+  on fake/missing files/terminal-without-force) backs `jobguard analyze
+  --id ... [--force]` and the dashboard Analyze button
+  (POST + CSRF, outcome notice on the detail page).
+- 2.10 per-run budgets: `TokenBudget` now caps requests as well as
+  tokens (`llm_max_requests_per_run`, default 100); both enforced in
+  `charge()`, i.e. only on real LLM calls — cache hits consume neither.
+  A spent budget raises `BudgetExhausted`, the pool stops intake
+  (in-flight items finish, the rest stay queued/retryable), and the run
+  reports which budget hit. On-demand analyze maps it to
+  "Run budget exhausted".
+- 2.11 observability + gate: `RunMeter` (thread-safe) records calls,
+  cache hits, 429s, limiter sleeps, per-stage tokens in/out, per-attempt
+  latency; `summary()` reports calls/posting, hit rate, p50/p95,
+  sleep/network/local split, items/min. Wired through run_pipeline,
+  the limiter (`observe_waits`), the client (429 hook), and the worker
+  (prints a meter line per run). The eval/CI gate asserts mean
+  `pipeline_calls_per_posting` <= 2.0 (baseline thresholds v8;
+  measured 1.167 — no baseline loosening, thresholds only added).
+- Contract change (item 2.11): classify+extract merged into ONE
+  `ClassifyExtract` call — the 2.0 gate is unreachable otherwise
+  (unknown-format success cost 3 calls). Non-postings still exit after
+  one call; posting fields are projection-validated against
+  PostingExtraction (empty-fields failure skips without retry — a
+  validation verdict, not a punt). PROMPT_VERSION bumped to v2. Eval
+  harness combines classify_json+extract_json into one rule and skips
+  intentionally-invalid parts (pipe-03 still fails safely via the
+  projection). Live-prompt risk noted for the Step 4 canary.
+
+### Decisions (Phase 9, so far)
+
+- Safest defaults: workers=2, top-N=30, cheap-score floor 15.0,
+  max input 3000 chars; leftovers stay `queued` ("not analyzed yet",
+  analyzable on demand — never counted as scored).
+- Pool creates per-item sessions from the factory; ORM objects never
+  cross threads. File-DB SQLite for pool tests (`:memory:` is
+  per-connection and invisible across threads).
+
 ### Decisions (Phase 8, so far)
 
 - System prompts show a tiny valid example + exact key list; raw schema
@@ -265,5 +354,9 @@ Gates 2026-11-23: ruff clean, pyright 0 errors, pytest 166 passed, eval
   links and truncating over-long spaceless tokens pre-redaction.
 - Groq free tier here: 1000 req/~3h, tight per-minute RPM; the worker is a
   guest on that budget, so backfills converge over runs rather than one shot.
+- 2026-11-23: sources expanded 1 -> 9 (7 verified boards: HackerRank,
+  Workato, Arcesium, Merkle Science, Hevo Data, FamPay, Drivetrain + WWR
+  programming RSS + Gmail). Rejected: Lever EU endpoints (payu/aidash 404),
+  RemoteOK RSS (404 from here). Boards verified live before wiring.
 
 All phases complete. Awaiting your next direction.

@@ -63,11 +63,19 @@ class Posting(Base):
     sender: Mapped[str] = mapped_column(String(512), default="")
     body: Mapped[str] = mapped_column(Text, default="")
     arrived_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # When the job was published upstream (board/API date, or the alert
+    # email's date); NULL when unknown -> sort falls back to arrived_at.
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     seen_on: Mapped[list[str]] = mapped_column(JSON, default=list)
     canonical_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     score: Mapped[float] = mapped_column(Float, default=0.0)
     scam_flag: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(32), default="new")
+    # Pipeline state machine (Phase 8; distinct from the user-facing status
+    # above). Terminal states are never re-processed by later runs.
+    pipe_status: Mapped[str] = mapped_column(String(32), default="queued")
+    pipe_stage: Mapped[str] = mapped_column(String(32), default="none")
+    cheap_score: Mapped[float] = mapped_column(Float, default=0.0)
 
 
 class Suggestion(Base):
@@ -80,6 +88,22 @@ class Suggestion(Base):
     card: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     resume_item_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     gaps: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class LLMCache(Base):
+    """One validated LLM response, keyed by sha256(family, version, content).
+
+    Hits make zero network calls and skip the token budget. Entries survive
+    restarts, so interrupted runs resume without duplicate calls.
+    """
+
+    __tablename__ = "llm_cache"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    model_family: Mapped[str] = mapped_column(String(256), index=True, default="")
+    prompt_version: Mapped[str] = mapped_column(String(32), default="")
+    response_text: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

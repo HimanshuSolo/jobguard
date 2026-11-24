@@ -7,12 +7,22 @@ services:
     runtime: docker
     plan: free
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /login
+    healthCheckPath: /healthz
     envVars:
       - key: DATABASE_URL
         sync: false # set in the Render dashboard (or leave unset for SQLite)
       - key: OWNER_EMAIL
         sync: false
+      - key: CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: CLERK_AUTHORIZED_PARTIES
+        sync: false # e.g. https://jobguard.onrender.com
+      - key: ROLE_LEVEL
+        value: intern
+      - key: GRAD_YEAR
+        value: 2027
       - key: DASHBOARD_USERNAME
         sync: false
       - key: DASHBOARD_PASSWORD_HASH

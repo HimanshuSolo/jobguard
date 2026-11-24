@@ -104,6 +104,15 @@ def test_budget_charges_reported_tokens() -> None:
     assert budget.used_tokens == 15
 
 
+def test_budget_request_cap() -> None:
+    budget = TokenBudget(max_tokens=10**9, max_requests=2)
+    for _ in range(2):
+        budget.charge(system="s", user="u", response=LLMResponse(model="m", text="t"))
+    assert budget.used_requests == 2
+    with pytest.raises(BudgetExhausted, match="request budget"):
+        budget.charge(system="s", user="u", response=LLMResponse(model="m", text="t"))
+
+
 def test_breaker_opens_and_recovers() -> None:
     now = [1000.0]
     breaker = CircuitBreaker(FakeClient(), threshold=2, cooldown_s=60.0, _clock=lambda: now[0])

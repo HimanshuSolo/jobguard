@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -56,6 +57,20 @@ def normalize_url(url: str) -> str:
     )
 
 
+def parse_when(value: str) -> datetime | None:
+    """ISO-8601-ish timestamp -> naive UTC datetime (None when unparseable)."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+    return parsed
+
+
 def canonical_key(company: str, role: str, location: str, link: str) -> str:
     """Stable cross-platform identity hash for one posting."""
     joined = "|".join(
@@ -85,6 +100,17 @@ class NormalizedPosting(BaseModel):
     published: str = ""
 
 
+def _mail_published(item: SourceItem, parsed: dict[str, Any]) -> str:
+    """Email date, minus the "posted N days ago" age a digest card shows."""
+    received = parse_when(str(item.payload.get("received_at", "")))
+    if received is None:
+        return ""
+    age = parsed.get("age_days")
+    if isinstance(age, int) and 0 <= age <= 120:
+        received -= timedelta(days=age)
+    return received.isoformat()
+
+
 def _from_mail(item: SourceItem) -> NormalizedPosting:
     parsed = item.payload.get("parsed") or {}
     if not isinstance(parsed, dict):
@@ -98,7 +124,7 @@ def _from_mail(item: SourceItem) -> NormalizedPosting:
         sender=str(item.payload.get("sender", "")),
         body=str(item.payload.get("body_text", ""))[:4000],
         seen_on=[item.source],
-        published="",
+        published=_mail_published(item, parsed),
     )
 
 

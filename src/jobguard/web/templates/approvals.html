@@ -1,22 +1,27 @@
 {% extends "base.html" %}
-{% block title %}Approvals — JobGuard{% endblock %}
+{% set active = "/approvals" %}
+{% block title %}Approvals · JobGuard{% endblock %}
 {% block content %}
-<h1>Pending <span class="accent">approvals.</span></h1>
-<table class="clean">
+<h1>Approvals</h1>
+<p class="sub">Actions waiting for your OK.</p>
+{% if actions %}
+<div class="table-wrap"><table class="clean">
 <tr><th>ID</th><th>Risk</th><th>Plan</th><th>Expires</th><th></th></tr>
 {% for a in actions %}
 <tr>
-<td>{{ a.id }}</td><td>{{ a.risk }}</td><td class="meta">{{ a.plan }}</td><td>{{ a.expires_at }}</td>
+<td>{{ a.id }}</td><td>{{ a.risk }}</td><td class="meta wrap">{{ a.plan }}</td><td>{{ a.expires_at }}</td>
 <td><a class="btn" href="/approvals/by-id/{{ a.id }}">Review</a></td>
 </tr>
 {% endfor %}
-</table>
-{% if not actions %}<p class="empty">Nothing pending.</p>{% endif %}
+</table></div>
+{% else %}<p class="empty">Nothing pending.</p>{% endif %}
+{% if decided %}
 <h2>Recent decisions</h2>
-<table class="clean">
+<div class="table-wrap"><table class="clean">
 <tr><th>ID</th><th>Risk</th><th>Status</th><th>Decided</th></tr>
 {% for a in decided %}
 <tr><td>{{ a.id }}</td><td>{{ a.risk }}</td><td>{{ a.status }}</td><td>{{ a.decided_at }}</td></tr>
 {% endfor %}
-</table>
+</table></div>
+{% endif %}
 {% endblock %}

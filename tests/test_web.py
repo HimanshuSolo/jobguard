@@ -60,7 +60,9 @@ def test_board_lists_demo_postings(client: TestClient) -> None:
     resp = client.get("/board")
     assert resp.status_code == 200
     assert "Acme Labs" in resp.text
-    assert "Data Entry" not in resp.text  # internships only by default
+    # Every stored posting is listed; relevance (interns only, India) is
+    # enforced by the pipeline, not by a page filter that hid most jobs.
+    assert "Data Entry" in resp.text
 
 
 def test_board_filter_hides_scam(client: TestClient) -> None:
@@ -78,12 +80,32 @@ def test_detail_shows_tailoring(client: TestClient) -> None:
     detail = client.get("/postings/1")
     assert "Emphasize the FastAPI dashboard" in detail.text
     assert "Gaps: Go" in detail.text
+    assert 'action="/postings/1/analyze"' in detail.text
+
+
+def test_analyze_button_reports_outcome(client: TestClient) -> None:
+    _login(client)
+    csrf = client.cookies.get(CSRF_COOKIE, "")
+    assert csrf
+    resp = client.post("/postings/1/analyze", data={"csrf": csrf})
+    assert resp.status_code == 200
+    # Demo settings use the fake provider, so analysis is refused — the
+    # wiring (auth + CSRF + outcome notice) is what this asserts.
+    assert "Analyze: refused" in resp.text
+
+
+def test_analyze_csrf_enforced(client: TestClient) -> None:
+    _login(client)
+    resp = client.post("/postings/1/analyze", data={"csrf": "wrong"})
+    assert "CSRF check failed" in resp.text
 
 
 def test_security_headers(client: TestClient) -> None:
     resp = client.get("/login")
     assert resp.headers["X-Frame-Options"] == "DENY"
-    assert "unpkg.com" in resp.headers["Content-Security-Policy"]
+    csp = resp.headers["Content-Security-Policy"]
+    assert "unpkg.com" not in csp  # no third-party scripts without Clerk
+    assert "frame-ancestors 'none'" in csp
 
 
 def _csrf(test_client: TestClient) -> str:
@@ -183,6 +205,7 @@ def _bare_settings(tmp_path: Path) -> Settings:
         dashboard_secret_key="bare-secret",
         dashboard_password_hash=hash_password("pw"),
         gmail_client_secret=str(tmp_path / "nope.json"),
+        gmail_token_path=str(tmp_path / "no-token.json"),
         boards_config_path=str(tmp_path / "nope.yaml"),
         imap_host="",
         rss_feeds="",
@@ -247,6 +270,71 @@ def test_keyword_gap_unit() -> None:
     matched, missing = keyword_gap("SDE Intern. Python and Go required. Docker a plus.", resume)
     assert "python" in matched
     assert "go" in missing
+
+
+def test_compact_resume_cached_and_capped() -> None:
+    from jobguard.resume import (
+        Resume,
+        ResumeItem,
+        clear_compact_cache,
+        compact_resume,
+    )
+
+    clear_compact_cache()
+    resume = Resume(
+        owner="T",
+        items=[
+            ResumeItem(id="exp-1", title="Intern", detail="Built things with FastAPI daily"),
+            ResumeItem(id="skill-1", title="Python"),
+        ],
+    )
+    first = compact_resume(resume)
+    assert "exp-1" in first and "skill-1" in first
+    assert compact_resume(resume) == first  # content-keyed cache hit
+    tiny = compact_resume(resume, max_chars=20)
+    assert len(tiny) <= 20 + len("\n…[truncated]")
+    clear_compact_cache()
+
+
+def test_pipeline_input_cap_applies() -> None:
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from jobguard.agent import TokenBudget, run_pipeline
+    from jobguard.llm.fake import FakeClient
+    from jobguard.store import Posting, init_db
+
+    engine = create_engine("sqlite:///:memory:")
+    init_db(engine)
+    client = FakeClient(
+        rules=[
+            (
+                "[classify_extract]",
+                '{"kind": "posting", "confidence": 0.9, "company": "Acme", "role": "SDE Intern"}',
+            )
+        ],
+        default="NOT-JSON",
+    )
+    with Session(engine) as session:
+        post = Posting(company="Acme", role="SDE Intern", canonical_key="cap1")
+        session.add(post)
+        session.commit()
+        from jobguard.agent import Profile
+        from jobguard.resume import Resume
+
+        run_pipeline(
+            post,
+            body="x" * 5000,
+            sender="s",
+            client=client,
+            profile=Profile(),
+            resume=Resume(owner="T"),
+            session=session,
+            budget=TokenBudget(max_tokens=100000),
+            max_input_chars=100,
+        )
+        sent = client.calls[0]["user"]
+        assert len(sent) <= 100 + len("[classify_extract]\n…[input truncated]") + 50
 
 
 def test_resume_dict_from_text_shapes() -> None:

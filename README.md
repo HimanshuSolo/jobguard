@@ -86,6 +86,15 @@ Per-run token budget (`LLM_MAX_TOKENS_PER_RUN`), provider fallback, and a
 circuit breaker are built in. `LLM_REPLAY_PATH` + `LLM_REPLAY_MODE` record
 or replay calls for deterministic CI.
 
+### What gets listed
+
+`ROLE_LEVEL=intern` keeps only internship / apprentice / trainee developer
+titles (SDE 2/3, senior and full-time roles are dropped); `GRAD_YEAR=2027`
+drops postings that name only other batches; `LOCATION_SCOPE=india` keeps
+India, India-compatible remote and location-less postings. The dashboard and
+digest list jobs newest-posted first (board/API publish date, or the alert
+email's date).
+
 ### Job boards and feeds
 
 ```bash
@@ -105,7 +114,27 @@ cp data/resume.example.yaml data/private/resume.yaml  # then fill in the REAL re
 Resume suggestions cite `resume.yaml` item IDs; anything else is a GAP.
 Fabrication violations block the suggestion entirely.
 
-### Dashboard login
+### Dashboard sign-in (Clerk)
+
+1. Create an application at dashboard.clerk.com (email or Google sign-in).
+   Under **Configure → Restrictions**, turn sign-ups off or to allowlist-only.
+2. Copy **API keys** into `.env` (never into a chat):
+
+   ```bash
+   CLERK_PUBLISHABLE_KEY=pk_test_...
+   CLERK_SECRET_KEY=sk_test_...
+   ```
+
+3. Only `OWNER_EMAIL` can enter (override with `CLERK_ALLOWED_EMAILS`, or
+   allow by id with `CLERK_ALLOWED_USER_IDS`). Every request verifies the
+   Clerk session JWT (RS256, issuer, expiry); a valid session for any other
+   account gets "not allowed". When deployed, set
+   `CLERK_AUTHORIZED_PARTIES=https://your-app.example` and add that domain
+   in Clerk.
+
+Without `CLERK_PUBLISHABLE_KEY`, the password login below is used.
+
+### Dashboard login (password fallback)
 
 ```bash
 DASHBOARD_USERNAME=admin

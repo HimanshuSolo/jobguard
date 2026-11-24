@@ -6,6 +6,8 @@ from jobguard.llm.openai_compat import OpenAICompatClient
 from jobguard.llm.replay import RecordReplayClient, prompt_key
 from jobguard.llm.schemas import (
     Classification,
+    ClassifyExtract,
+    MatchAndSuggest,
     MatchResult,
     PostingExtraction,
     SchemaValidationError,
@@ -17,6 +19,7 @@ from jobguard.llm.schemas import (
 
 __all__ = [
     "Classification",
+    "ClassifyExtract",
     "FakeClient",
     "LLMClient",
     "LLMError",
@@ -26,6 +29,7 @@ __all__ = [
     "PostingExtraction",
     "RecordReplayClient",
     "SchemaValidationError",
+    "MatchAndSuggest",
     "TailoringCard",
     "TailoringSuggestion",
     "parse_strict",

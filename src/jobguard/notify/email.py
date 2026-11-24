@@ -4,7 +4,7 @@ Separate credentials from mail reading (`SENDER_SMTP_*`). Every send enforces,
 in order: recipient lock + daily cap (`check_sendable`), outbound secret
 scan (`scan_outbound`), then delivery. Refusals raise `SendRefused` (audited
 by the caller); transport errors raise `SendFailed`. Nothing is ever sent to
-an address other than the owner.
+an address other than the owner or the configured DIGEST_RECIPIENTS.
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ class SmtpNotifier:
         from_address: str,
         owner_email: str,
         max_per_day: int = 20,
+        extra_recipients: tuple[str, ...] = (),
         smtp_factory: SmtpFactory | None = None,
     ) -> None:
         if not host or not from_address or not owner_email:
@@ -58,6 +59,7 @@ class SmtpNotifier:
         self._from = from_address
         self._owner = owner_email
         self._max_per_day = max_per_day
+        self._extra = extra_recipients
         self._factory: SmtpFactory = smtp_factory or smtplib.SMTP
 
     @property
@@ -75,7 +77,11 @@ class SmtpNotifier:
     ) -> None:
         """Policy-gated send; records nothing (caller records `DigestSent`)."""
         allowed, reason = check_sendable(
-            session, to=to, owner_email=self._owner, max_per_day=self._max_per_day
+            session,
+            to=to,
+            owner_email=self._owner,
+            max_per_day=self._max_per_day,
+            extra_recipients=self._extra,
         )
         if not allowed:
             raise SendRefused(reason)

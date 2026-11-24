@@ -1,9 +1,10 @@
 {
-  "version": 7,
-  "note": "Phase 7 re-baseline (deliberate): 62 earlier cases + 5 edge-sweep regressions (short-number PII, injection near-misses, uppercase URL, deadline-now boundary).",
+  "version": 8,
+  "note": "Phase 9 perf gate (deliberate): added max_calls_per_posting 2.0 for the merged classify+extract pipeline (measured 1.5 mean over the 6 pipeline_smoke cases).",
   "thresholds": {
     "min_accuracy": 1.0,
-    "max_regression": 0.0
+    "max_regression": 0.0,
+    "max_calls_per_posting": 2.0
   },
   "metrics": {
     "accuracy": 1.0,

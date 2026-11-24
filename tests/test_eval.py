@@ -56,6 +56,57 @@ def test_summarize_per_category() -> None:
         "total": 2,
         "accuracy": 0.5,
     }
+    assert metrics["pipeline_calls_per_posting"] is None
+
+
+def test_summarize_pipeline_calls_per_posting() -> None:
+    metrics = summarize(
+        [
+            {
+                "id": "pipe-01",
+                "category": "pipeline",
+                "task": "pipeline_smoke",
+                "passed": True,
+                "llm_calls": 2,
+            },
+            {
+                "id": "pipe-02",
+                "category": "pipeline",
+                "task": "pipeline_smoke",
+                "passed": True,
+                "llm_calls": 1,
+            },
+            {
+                "id": "pol-01",
+                "category": "policy",
+                "task": "policy_decision",
+                "passed": True,
+            },
+        ]
+    )
+    assert metrics["pipeline_calls_per_posting"] == 1.5
+
+
+def test_calls_per_posting_gate() -> None:
+    baseline = {
+        "thresholds": {
+            "min_accuracy": 0.0,
+            "max_regression": 1.0,
+            "max_calls_per_posting": 2.0,
+        },
+        "metrics": {"accuracy": 1.0},
+    }
+    over = {"accuracy": 1.0, "pipeline_calls_per_posting": 2.5}
+    assert any("calls/posting" in reg for reg in compare_with_baseline(over, baseline))
+    under = {"accuracy": 1.0, "pipeline_calls_per_posting": 1.5}
+    assert compare_with_baseline(under, baseline) == []
+    assert compare_with_baseline({"accuracy": 1.0}, baseline) == []
+    # The 2.0 default applies when the threshold key is absent.
+    no_key = {
+        "thresholds": {"min_accuracy": 0.0, "max_regression": 1.0},
+        "metrics": {"accuracy": 1.0},
+    }
+    assert compare_with_baseline(over, no_key) != []
 
 
 def test_reports_render() -> None:

@@ -1,12 +1,43 @@
-# Company job boards (public JSON endpoints). Copy to data/boards.yaml and edit.
-# Slugs are public: Greenhouse slug = boards.greenhouse.io/<slug>,
-# Lever slug = lever.co/<slug> jobs page.
+# Company job boards (official public JSON endpoints, no scraping).
+# Every slug below was verified live with India openings on 2026-11-24.
+# Greenhouse: boards.greenhouse.io/<slug> | Lever: jobs.lever.co/<slug>
+# Ashby: jobs.ashbyhq.com/<slug>
+# Non-India / non-dev roles are dropped by the prefilter (LOCATION_SCOPE=india).
 boards:
-  - provider: greenhouse
-    slug: example-co
-    company: Example Co
-    include_content: false
-  - provider: lever
-    slug: example-labs
-    company: Example Labs
-    include_content: false
+  # --- Indian product companies / startups ---
+  - {provider: greenhouse, slug: razorpaysoftwareprivatelimited, company: Razorpay}
+  - {provider: greenhouse, slug: groww, company: Groww}
+  - {provider: greenhouse, slug: hackerrank, company: HackerRank}
+  - {provider: greenhouse, slug: druva, company: Druva}
+  - {provider: lever, slug: paytm, company: Paytm}
+  - {provider: lever, slug: cred, company: CRED}
+  - {provider: lever, slug: zeta, company: Zeta}
+  - {provider: lever, slug: mindtickle, company: Mindtickle}
+  - {provider: lever, slug: hevodata, company: Hevo Data}
+  - {provider: lever, slug: fampay, company: FamPay}
+  - {provider: lever, slug: drivetrain, company: Drivetrain}
+  - {provider: lever, slug: merklescience, company: Merkle Science}
+  - {provider: ashby, slug: sarvam, company: Sarvam AI}
+  - {provider: ashby, slug: atlan, company: Atlan}
+  - {provider: ashby, slug: plane, company: Plane}
+  - {provider: ashby, slug: composio, company: Composio}
+  # --- Global companies with large India engineering centres ---
+  - {provider: greenhouse, slug: arcesiumllc, company: Arcesium}
+  - {provider: greenhouse, slug: rubrik, company: Rubrik}
+  - {provider: greenhouse, slug: databricks, company: Databricks}
+  - {provider: greenhouse, slug: stripe, company: Stripe}
+  - {provider: greenhouse, slug: coinbase, company: Coinbase}
+  - {provider: greenhouse, slug: mongodb, company: MongoDB}
+  - {provider: greenhouse, slug: okta, company: Okta}
+  - {provider: greenhouse, slug: zscaler, company: Zscaler}
+  - {provider: greenhouse, slug: purestorage, company: Pure Storage}
+  - {provider: greenhouse, slug: samsara, company: Samsara}
+  - {provider: greenhouse, slug: toast, company: Toast}
+  - {provider: greenhouse, slug: airbnb, company: Airbnb}
+  - {provider: greenhouse, slug: elastic, company: Elastic}
+  - {provider: greenhouse, slug: sumologic, company: Sumo Logic}
+  - {provider: ashby, slug: supabase, company: Supabase}
+  - {provider: ashby, slug: ramp, company: Ramp}
+  - {provider: ashby, slug: elevenlabs, company: ElevenLabs}
+  - {provider: ashby, slug: perplexity, company: Perplexity}
+  - {provider: ashby, slug: posthog, company: PostHog}

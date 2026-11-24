@@ -12,46 +12,47 @@ import re
 from jobguard.llm.schemas import TailoringCard
 from jobguard.resume.loader import Resume
 
-_COMMON_TECH_TERMS = (
-    "python sql fastapi react javascript typescript java go rust c++ aws gcp azure "
-    "docker kubernetes postgres mysql mongodb redis git linux rest graphql django flask "
-    "node express next.js tailwind figma tensorflow pytorch pandas numpy airflow spark "
-    "kafka elasticsearch nginx ci/cd jenkins github actions terraform ansible "
-    "microservices system design oop dsa operating systems dbms computer networks "
-    "machine learning deep learning nlp computer vision llm rag langchain "
-    "html css bootstrap redux vue angular svelte kotlin swift flutter dart "
-    "spring springboot .net c# php laravel ruby rails scala haskell matlab r "
-    "tableau powerbi excel selenium pytest jest unittest junit cypress playwright "
-    "jira agile scrum postman swagger openapi firebase supabase vercel netlify "
-    "graphql apollo trpc grpc websocket mqtt oauth jwt sso saml ldap vim "
-    "bash powershell azure devops gcp cloud run ec2 s3 lambda cloudformation "
-    "bigquery snowflake redshift databricks etl elt dbt looker metabase grafana "
-    "prometheus datadog sentry new relic linear notion"
-).split()
+# Comma-separated so multi-word terms stay whole: splitting on spaces turned
+# "deep learning" / "new relic" / "system design" into "deep", "new", "system".
+_COMMON_TECH_TERMS = tuple(
+    dict.fromkeys(
+        t.strip()
+        for t in (
+            "python, sql, fastapi, react, javascript, typescript, java, go, golang, rust, c++, "
+            "aws, gcp, azure, docker, kubernetes, postgres, postgresql, mysql, mongodb, redis, "
+            "git, linux, rest, graphql, django, flask, node.js, nodejs, express, next.js, "
+            "tailwind, figma, tensorflow, pytorch, pandas, numpy, airflow, spark, kafka, "
+            "elasticsearch, nginx, ci/cd, jenkins, github actions, terraform, ansible, "
+            "microservices, system design, oop, dsa, data structures, algorithms, "
+            "operating systems, dbms, computer networks, machine learning, deep learning, "
+            "nlp, computer vision, llm, rag, langchain, html, css, bootstrap, redux, vue, "
+            "angular, svelte, kotlin, swift, flutter, dart, spring boot, spring, .net, c#, "
+            "php, laravel, ruby on rails, scala, haskell, matlab, tableau, power bi, excel, "
+            "selenium, pytest, jest, junit, cypress, playwright, jira, agile, scrum, postman, "
+            "swagger, openapi, firebase, supabase, vercel, grpc, websocket, mqtt, oauth, jwt, "
+            "sso, saml, ldap, bash, powershell, azure devops, ec2, s3, lambda, "
+            "cloudformation, bigquery, snowflake, redshift, databricks, etl, dbt, looker, "
+            "grafana, prometheus, datadog, sentry, new relic, rabbitmq, celery, unity, "
+            "android, ios, react native, socket.io, webrtc, cuda, opencv, hugging face"
+        ).split(",")
+        if t.strip()
+    )
+)
 
-
-def _terms(resume: Resume) -> list[str]:
-    seen: list[str] = []
-    for item in resume.items:
-        for chunk in (item.title, item.detail):
-            for word in re.split(r"[^a-zA-Z+#./-]+", chunk):
-                token = word.strip().casefold()
-                if len(token) >= 2 and token not in seen:
-                    seen.append(token)
-    return seen
+_BOUNDARY = r"(?<![a-z0-9+#./-]){}(?![a-z0-9+#])"
 
 
 def keyword_gap(body: str, resume: Resume) -> tuple[list[str], list[str]]:
     """Split tech terms in ``body`` into (matched, missing) vs the resume."""
     haystack = body.casefold()
-    resume_terms = set(_terms(resume))
+    resume_text = " ".join(f"{i.title} {i.detail}" for i in resume.items).casefold()
     matched: list[str] = []
     missing: list[str] = []
     for term in _COMMON_TECH_TERMS:
-        pattern = r"(?<![a-z0-9+#./-])" + re.escape(term) + r"(?![a-z0-9+#./-])"
+        pattern = _BOUNDARY.format(re.escape(term))
         if not re.search(pattern, haystack):
             continue
-        (matched if term in resume_terms else missing).append(term)
+        (matched if re.search(pattern, resume_text) else missing).append(term)
     return matched, missing
 
 

@@ -1,31 +1,80 @@
 {% extends "base.html" %}
-{% block title %}{{ posting.role }} — JobGuard{% endblock %}
+{% set active = "/board" %}
+{% block title %}{{ posting.role }} · JobGuard{% endblock %}
 {% block content %}
-<h1>{{ posting.role or "Untitled role" }} <span class="accent">at {{ posting.company or "?" }}</span></h1>
-<p class="sub">{{ posting.location }}{% if posting.deadline %} · closes {{ posting.deadline }}{% endif %} · score {{ "%.0f"|format(posting.score) }} · {{ posting.status }}</p>
-{% if posting.scam_flag %}<p class="notice flag">Flagged suspicious — do not apply without review.</p>{% endif %}
-{% if posting.link %}<p><a class="btn btn-warm" href="{{ posting.link }}">Apply</a></p>{% endif %}
-<p class="meta">Sources: {{ posting.seen_on|join(", ") }}</p>
+<a class="back" href="/board">← Internships</a>
+<div class="detail-head">
+<div class="logo" style="--h: {{ posting.company|hue }}" aria-hidden="true">{{ posting.company|initial }}</div>
+<div>
+<h1>{{ posting.role or "Untitled role" }}</h1>
+<p class="sub">{{ posting.company or "Unknown company" }}{% if posting.location %} · {{ posting.location }}{% endif %} · {{ posting|posted }}</p>
+</div>
+</div>
+{% if posting.scam_flag %}<p class="notice flag">Flagged as suspicious. Verify the company before applying.</p>{% endif %}
+{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
 
-<h2>Resume keyword check</h2>
+<div class="detail-grid">
+<div>
+<section class="card">
+<h3>Resume keywords</h3>
 <div class="chips">
 {% for k in matched %}<span class="chip have">✓ {{ k }}</span>{% endfor %}
 {% for k in missing %}<span class="chip missing">+ {{ k }}</span>{% endfor %}
-{% if not matched and not missing %}<span class="meta">No tech keywords detected in this posting.</span>{% endif %}
+{% if not matched and not missing %}<span class="meta">No tech keywords found in this posting.</span>{% endif %}
 </div>
-<p class="meta">✓ you have it · + missing from your resume (consider learning or a project)</p>
+<p class="meta" style="margin:0.75rem 0 0">Green: already on your resume, put these first. Red: asked for but missing; add only if true.</p>
+</section>
 
-<h2>Tailoring suggestions</h2>
-<div class="detail">
+<section class="card">
+<h3>Tailoring suggestions</h3>
 {% if suggestion %}
 <ul>
 {% for s in suggestion.card.get("suggestions", []) %}
-<li><b>{{ s.get("kind") }}</b> [{{ s.get("resume_item_ids", [])|join(", ") }}] — {{ s.get("text", "") }}</li>
+<li><b>{{ s.get("kind")|capitalize }}</b>{% if s.get("resume_item_ids") %} <span class="meta">[{{ s.get("resume_item_ids", [])|join(", ") }}]</span>{% endif %}: {{ s.get("text", "") }}</li>
 {% endfor %}
 </ul>
-{% if suggestion.gaps %}<p class="meta">Gaps: {{ suggestion.gaps|join(", ") }}</p>{% endif %}
+{% if suggestion.gaps %}<p class="meta" style="margin:0.75rem 0 0">Gaps: {{ suggestion.gaps|join(", ") }}</p>{% endif %}
 {% else %}
-<p class="meta">No tailoring suggestion yet — run the worker with an LLM provider configured.</p>
+<p class="meta" style="margin:0">Not analyzed yet. Run an analysis to get AI suggestions for this role.</p>
 {% endif %}
+<form class="actions" method="post" action="/postings/{{ posting.id }}/analyze">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit" class="btn-sm">{% if suggestion %}Re-analyze{% else %}Analyze now{% endif %}</button>
+</form>
+</section>
+
+{% if posting.body %}
+<section class="card">
+<h3>Posting</h3>
+<pre class="posting-text">{{ posting.body[:6000] }}</pre>
+</section>
+{% endif %}
+</div>
+
+<aside>
+<section class="card">
+<div class="meta">{% if posting.pipe_status == "done" %}AI match score{% else %}Quick match score{% endif %}</div>
+<div class="big-score">{{ posting|score }}</div>
+<div class="meter" style="margin-top:0.6rem"><i style="width: {{ posting|scoreval }}%"></i></div>
+<div class="side-actions">
+{% if posting.link|safe_url %}<a class="btn btn-accent btn-block" href="{{ posting.link|safe_url }}" target="_blank" rel="noopener noreferrer">Apply ↗</a>{% endif %}
+{% for value, label in [("applied", "Mark as applied"), ("ignored", "Hide this job"), ("new", "Move back to open")] %}
+{% if posting.status != value %}
+<form method="post" action="/postings/{{ posting.id }}/status">
+<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="value" value="{{ value }}">
+<button type="submit" class="btn-block{% if value != 'applied' %} btn-ghost{% endif %}">{{ label }}</button>
+</form>
+{% endif %}
+{% endfor %}
+</div>
+</section>
+<section class="card">
+<dl class="kv">
+<dt>Status</dt><dd>{{ posting.status|capitalize }}</dd>
+{% if posting.deadline %}<dt>Closes</dt><dd>{{ posting.deadline.strftime("%d %b %Y") }}</dd>{% endif %}
+<dt>Source</dt><dd>{{ (posting.seen_on or [posting.source])|join(", ") }}</dd>
+</dl>
+</section>
+</aside>
 </div>
 {% endblock %}

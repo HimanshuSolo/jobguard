@@ -2,13 +2,14 @@
 
 Scores a posting against the owner's profile config WITHOUT an LLM call:
 skill overlap, role-type match, internship/new-grad fit, location, and
-deadline proximity. The LLM `MatchResult` is the primary score in the
+deadline proximity. The LLM combined match+suggest call carries the primary score in the
 pipeline; this rank is appended as an explained, reproducible second opinion
 and orders items when the LLM is unreachable.
 """
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -93,9 +94,19 @@ def score_posting(
         score += 10.0
         reasons.append("location fit: +10")
 
+    if profile.new_grad:
+        senior = re.search(
+            r"(?i)\b(senior|sr\.?|staff|lead|principal|manager|architect|director|head|"
+            r"vp|sde\s*-?\s*(?:ii|iii|2|3)|l[4-9])\b",
+            role,
+        )
+        if senior:
+            score -= 35.0
+            reasons.append(f"seniority {senior.group(0)!r} vs new-grad profile: -35")
+
     days = _deadline_days(deadline) if deadline else None
     if days is not None and 0 <= days <= 14:
         score += 5.0
         reasons.append(f"deadline in {days:.0f}d: +5")
 
-    return RankResult(score=min(100.0, score), reasons=reasons)
+    return RankResult(score=max(0.0, min(100.0, score)), reasons=reasons)

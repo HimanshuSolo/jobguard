@@ -36,6 +36,8 @@ class AlertPosting(BaseModel):
     link: str = ""
     sender: str = ""
     subject: str = ""
+    snippet: str = ""  # this job's own card text when split from a digest
+    age_days: int | None = None  # "posted N days ago" shown on the card
 
 
 def detect_platform(sender: str) -> str:

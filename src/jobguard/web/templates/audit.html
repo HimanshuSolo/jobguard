@@ -1,12 +1,13 @@
 {% extends "base.html" %}
-{% block title %}Audit — JobGuard{% endblock %}
+{% set active = "/audit" %}
+{% block title %}Audit · JobGuard{% endblock %}
 {% block content %}
-<h1>Audit <span class="accent">log.</span></h1>
-<p class="sub">Latest {{ entries|length }} events · metadata only, never message content</p>
-<table class="clean">
-<tr><th>Time</th><th>Event</th><th>Detail</th></tr>
+<h1>Audit log</h1>
+<p class="sub">Latest {{ entries|length }} events. Metadata only, never message content.</p>
+<div class="table-wrap"><table class="clean">
+<tr><th>Time (UTC)</th><th>Event</th><th>Detail</th></tr>
 {% for e in entries %}
-<tr><td>{{ e.created_at }}</td><td>{{ e.event }}</td><td class="meta">{{ e.detail }}</td></tr>
+<tr><td>{{ e.created_at.strftime("%d %b %H:%M") if e.created_at else "" }}</td><td>{{ e.event }}</td><td class="meta wrap">{{ e.detail }}</td></tr>
 {% endfor %}
-</table>
+</table></div>
 {% endblock %}

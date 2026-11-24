@@ -8,11 +8,16 @@ and never logged.
 from __future__ import annotations
 
 import time
+from typing import TYPE_CHECKING
 
 import httpx
 import structlog
 
+from jobguard.agent.meter import RunMeter
 from jobguard.llm.client import LLMError, LLMResponse
+
+if TYPE_CHECKING:
+    from jobguard.agent.ratelimit import RateLimiter
 
 log = structlog.get_logger(__name__)
 
@@ -30,7 +35,9 @@ class OpenAICompatClient:
         json_mode: bool = True,
         temperature: float = 0.0,
         max_retries: int = 2,
+        limiter: RateLimiter | None = None,
         transport: httpx.BaseTransport | None = None,
+        meter: RunMeter | None = None,
     ) -> None:
         if not base_url:
             raise ValueError("base_url is required for OpenAICompatClient")
@@ -43,7 +50,9 @@ class OpenAICompatClient:
         self._json_mode = json_mode
         self._temperature = temperature
         self._max_retries = max_retries
+        self._limiter = limiter
         self._transport = transport
+        self._meter = meter
 
     @property
     def name(self) -> str:
@@ -72,11 +81,14 @@ class OpenAICompatClient:
 
         Retries timeouts, connection errors, 429s (honoring Retry-After),
         and 5xxs. Other 4xx responses are request errors, not worth
-        repeating, and raise immediately.
+        repeating, and raise immediately. A shared limiter (if any) gates
+        every attempt and learns Retry-After headers globally.
         """
         last_error = "unknown error"
         with httpx.Client(timeout=self._timeout_s, transport=self._transport) as http:
             for attempt in range(self._max_retries + 1):
+                if self._limiter is not None:
+                    self._limiter.acquire(self._estimate_tokens(json_body))
                 try:
                     resp = http.post(url, headers=headers, json=json_body)
                 except (httpx.TimeoutException, httpx.ConnectError) as exc:
@@ -87,8 +99,12 @@ class OpenAICompatClient:
                         return resp
                     if status == 429 or 500 <= status < 600:
                         last_error = f"HTTP {status}"
+                        if status == 429 and self._meter is not None:
+                            self._meter.record_429()
                         if attempt < self._max_retries:
-                            retry_after = resp.headers.get("retry-after")
+                            retry_after = self._parse_retry_after(resp)
+                            if retry_after is not None and self._limiter is not None:
+                                self._limiter.note_retry_after(retry_after)
                             delay = self._retry_delay(attempt, retry_after)
                             log.info(
                                 "llm.retry",
@@ -113,10 +129,31 @@ class OpenAICompatClient:
         raise LLMError(f"OpenAI-compatible call failed after retries: {last_error}")
 
     @staticmethod
-    def _retry_delay(attempt: int, retry_after: str | None) -> float:
-        if retry_after:
+    def _estimate_tokens(json_body: dict[str, object]) -> int:
+        """Rough input size for throttling (len//4); real usage is metered later."""
+        size = 0
+        messages = json_body.get("messages")
+        if isinstance(messages, list):
+            for message in messages:
+                if isinstance(message, dict):
+                    size += len(str(message.get("content", "")))
+        return max(1, size // 4 + 50)
+
+    @staticmethod
+    def _parse_retry_after(resp: httpx.Response) -> float | None:
+        raw = resp.headers.get("retry-after")
+        if raw is None:
+            return None
+        try:
+            return min(max(float(raw), 0.0), 60.0)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _retry_delay(attempt: int, retry_after: str | float | None) -> float:
+        if retry_after is not None:
             try:
-                return min(float(retry_after), 60.0)
+                return min(max(float(retry_after), 0.0), 60.0)
             except ValueError:
                 pass
         return min(2.0**attempt, 8.0)
