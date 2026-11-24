@@ -1,20 +1,23 @@
 {% extends "base.html" %}
-{% block title %}Resume — JobGuard{% endblock %}
+{% set active = "/resume" %}
+{% block title %}Resume · JobGuard{% endblock %}
 {% block content %}
-<h1>Your <span class="accent">resume.</span></h1>
-<p class="sub">{{ resume.items|length }} citable items · suggestions may only cite these IDs, everything else is a GAP</p>
+<h1>Resume</h1>
+<p class="sub">{{ resume.items|length }} citable items. Suggestions may only cite these; anything else is shown as a gap.</p>
 {% if message %}<p class="notice">{{ message }}</p>{% endif %}
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if resume.items %}
 <ul class="chips">
 {% for item in resume.items %}
-<span class="chip">{{ item.id }} — {{ item.title or item.detail[:60] }}</span>
+<li class="chip">{{ item.id }} · {{ item.title or item.detail[:60] }}</li>
 {% endfor %}
 </ul>
-<h2>Upload a new resume</h2>
-<p class="meta">Paste YAML in the example shape, or plain text (skills are parsed from <code>Skills:</code> lines). Saved to your private resume file; the pipeline uses it immediately.</p>
+{% endif %}
+<h2>Replace resume</h2>
+<p class="meta">Paste YAML in the example shape, or plain text (skills are read from <code>Skills:</code> lines). Saved privately; used from the next analysis on.</p>
 <form method="post" action="/resume">
 <input type="hidden" name="csrf" value="{{ csrf }}">
-<textarea class="upload" name="content" placeholder="Paste resume YAML or plain text here..."></textarea><br><br>
-<button class="btn" type="submit">Save resume</button>
+<textarea class="upload" name="content" placeholder="Paste resume YAML or plain text…" required></textarea>
+<div class="actions"><button class="btn btn-primary" type="submit">Save resume</button></div>
 </form>
 {% endblock %}
