@@ -63,6 +63,9 @@ class Posting(Base):
     sender: Mapped[str] = mapped_column(String(512), default="")
     body: Mapped[str] = mapped_column(Text, default="")
     arrived_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # When the job was published upstream (board/API date, or the alert
+    # email's date); NULL when unknown -> sort falls back to arrived_at.
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     seen_on: Mapped[list[str]] = mapped_column(JSON, default=list)
     canonical_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     score: Mapped[float] = mapped_column(Float, default=0.0)
