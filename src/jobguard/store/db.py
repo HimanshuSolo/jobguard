@@ -14,6 +14,7 @@ _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
     ("postings", "pipe_status", "VARCHAR(32) DEFAULT 'queued'"),
     ("postings", "pipe_stage", "VARCHAR(32) DEFAULT 'none'"),
     ("postings", "cheap_score", "FLOAT DEFAULT 0.0"),
+    ("postings", "posted_at", "TIMESTAMP"),
 ]
 
 
