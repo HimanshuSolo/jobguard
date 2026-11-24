@@ -60,7 +60,9 @@ def test_board_lists_demo_postings(client: TestClient) -> None:
     resp = client.get("/board")
     assert resp.status_code == 200
     assert "Acme Labs" in resp.text
-    assert "Data Entry" not in resp.text  # internships only by default
+    # Every stored posting is listed; relevance (interns only, India) is
+    # enforced by the pipeline, not by a page filter that hid most jobs.
+    assert "Data Entry" in resp.text
 
 
 def test_board_filter_hides_scam(client: TestClient) -> None:
@@ -78,7 +80,7 @@ def test_detail_shows_tailoring(client: TestClient) -> None:
     detail = client.get("/postings/1")
     assert "Emphasize the FastAPI dashboard" in detail.text
     assert "Gaps: Go" in detail.text
-    assert "Analyze now" in detail.text
+    assert 'action="/postings/1/analyze"' in detail.text
 
 
 def test_analyze_button_reports_outcome(client: TestClient) -> None:
@@ -101,7 +103,9 @@ def test_analyze_csrf_enforced(client: TestClient) -> None:
 def test_security_headers(client: TestClient) -> None:
     resp = client.get("/login")
     assert resp.headers["X-Frame-Options"] == "DENY"
-    assert "unpkg.com" in resp.headers["Content-Security-Policy"]
+    csp = resp.headers["Content-Security-Policy"]
+    assert "unpkg.com" not in csp  # no third-party scripts without Clerk
+    assert "frame-ancestors 'none'" in csp
 
 
 def _csrf(test_client: TestClient) -> str:
@@ -201,6 +205,7 @@ def _bare_settings(tmp_path: Path) -> Settings:
         dashboard_secret_key="bare-secret",
         dashboard_password_hash=hash_password("pw"),
         gmail_client_secret=str(tmp_path / "nope.json"),
+        gmail_token_path=str(tmp_path / "no-token.json"),
         boards_config_path=str(tmp_path / "nope.yaml"),
         imap_host="",
         rss_feeds="",
