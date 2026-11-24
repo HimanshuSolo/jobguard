@@ -22,6 +22,7 @@ TERMINAL_STATUSES = frozenset(
         "flagged_scam",
         "expired",
         "violations",
+        "filtered",  # failed the role / India-location relevance gates
     }
 )
 
