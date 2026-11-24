@@ -1,9 +1,16 @@
 """Digest builder: morning / evening digests + urgent items (Phase 5).
 
-Sections per SPEC 8: Closing soon, New today, Best matches (with score
+Sections per SPEC 8: Closing soon, New jobs, Best matches (with score
 reason + tailoring notes), Flagged suspicious, Needs your approval.
 Resend rule: an item already recorded in `digests_sent` is skipped unless its
 deadline or status changed since (tokens encode both).
+
+"New" means *not yet included in any sent digest*, not "arrived on today's
+UTC date": the morning run at 07:00 IST used to miss everything synced the
+evening before. Ranking uses the LLM score when a posting was analyzed and
+the local heuristic score otherwise, so un-analyzed jobs still rank (the
+LLM only reaches a bounded top-N per run). Only listed items are recorded
+as sent; anything over the size cap rolls into the next digest.
 """
 
 from __future__ import annotations
@@ -11,13 +18,40 @@ from __future__ import annotations
 import html
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy.orm import Session
 
 from jobguard.store.models import DigestSent, PendingAction, Posting, Suggestion
 
+if TYPE_CHECKING:
+    from jobguard.resume.loader import Resume
+
 DigestKind = Literal["morning", "evening", "urgent"]
+
+# Pipeline outcomes that never belong in a digest (scams get their own section).
+HIDDEN_STATUSES = frozenset({"filtered", "skipped_non_job", "quarantined", "expired", "violations"})
+
+
+def posted_or_arrived(post: Posting) -> datetime:
+    """Publish date when known, else when JobGuard first saw it (naive UTC)."""
+    stamp = post.posted_at or post.arrived_at or datetime(1970, 1, 1)
+    return stamp.replace(tzinfo=None) if stamp.tzinfo else stamp
+
+
+def posted_label(post: Posting, now: datetime | None = None) -> str:
+    """'posted today' / 'posted 3d ago' / 'seen 2d ago' (when date unknown)."""
+    now = (now or datetime.now(UTC)).replace(tzinfo=None)
+    days = max(0, (now - posted_or_arrived(post)).days)
+    verb = "posted" if post.posted_at else "seen"
+    return f"{verb} today" if days == 0 else f"{verb} {days}d ago"
+
+
+def effective_score(post: Posting) -> float:
+    """LLM score once analyzed, else the local heuristic (cheap) score."""
+    if post.pipe_status == "done" or (post.score or 0.0) > 0:
+        return float(post.score or 0.0)
+    return float(post.cheap_score or 0.0)
 
 
 def _token(post: Posting) -> str:
@@ -43,6 +77,7 @@ class Digest:
     best: list[Posting] = field(default_factory=list)
     flagged: list[Posting] = field(default_factory=list)
     pending_approvals: int = 0
+    new_total: int = 0  # all new relevant jobs, before the size cap
     tokens: list[str] = field(default_factory=list)
     generated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -52,20 +87,38 @@ class Digest:
         return not (self.closing or self.new_today or self.best or self.flagged)
 
 
-def _tailoring_note(session: Session, post: Posting) -> str:
+def _keyword_note(post: Posting, resume: Resume | None) -> str:
+    """Deterministic resume advice: JD tech terms missing from the resume."""
+    if resume is None:
+        return ""
+    from jobguard.resume.checker import keyword_gap
+
+    text = "\n".join([post.role or "", " ".join(post.skills or []), post.body or ""])
+    matched, missing = keyword_gap(text, resume)
+    parts: list[str] = []
+    if missing:
+        parts.append("add if true for you: " + ", ".join(missing[:6]))
+    if matched:
+        parts.append("put first: " + ", ".join(matched[:6]))
+    return "; ".join(parts)
+
+
+def _tailoring_note(session: Session, post: Posting, resume: Resume | None = None) -> str:
     suggestion = (
         session.query(Suggestion)
         .filter_by(posting_id=post.id)
         .order_by(Suggestion.id.desc())
         .first()
     )
-    if suggestion is None:
-        return ""
-    card: dict[str, Any] = suggestion.card or {}
     notes: list[str] = []
-    for item in card.get("suggestions", [])[:2]:
-        if isinstance(item, dict) and item.get("text"):
-            notes.append(str(item["text"])[:200])
+    if suggestion is not None:
+        card: dict[str, Any] = suggestion.card or {}
+        for item in card.get("suggestions", [])[:2]:
+            if isinstance(item, dict) and item.get("text"):
+                notes.append(str(item["text"])[:200])
+    keywords = _keyword_note(post, resume)
+    if keywords:
+        notes.append("Keywords: " + keywords)
     return " | ".join(notes)
 
 
@@ -76,6 +129,7 @@ def build_digest(
     best_score: float = 75.0,
     urgent_hours: int = 48,
     max_best: int = 10,
+    max_items: int = 60,
 ) -> Digest:
     """Assemble sections from the DB, honouring the no-resend rule."""
     now = datetime.now(UTC)
@@ -83,13 +137,11 @@ def build_digest(
     posts = session.query(Posting).order_by(Posting.id).all()
 
     digest = Digest(kind=kind, subject="")
-    fresh: list[Posting] = []
-    for post in posts:
-        token = _token(post)
-        if token in seen:
-            continue
-        fresh.append(post)
-        digest.tokens.append(token)
+    fresh = [
+        p
+        for p in posts
+        if _token(p) not in seen and (p.pipe_status or "queued") not in HIDDEN_STATUSES
+    ]
 
     def deadline_in(post: Posting) -> float | None:
         if post.deadline is None:
@@ -97,71 +149,143 @@ def build_digest(
         aware = post.deadline if post.deadline.tzinfo else post.deadline.replace(tzinfo=UTC)
         return (aware - now).total_seconds() / 3600.0
 
+    def is_scam(post: Posting) -> bool:
+        return bool(post.scam_flag) or post.pipe_status == "flagged_scam"
+
     for post in fresh:
         hours = deadline_in(post)
         # Grace of one hour past the deadline: clock skew and just-closed
         # postings still deserve one showing; the no-resend token dedupes.
-        if hours is not None and -1 <= hours <= urgent_hours and not post.scam_flag:
+        if hours is not None and -1 <= hours <= urgent_hours and not is_scam(post):
             digest.closing.append(post)
 
-    today = now.date()
-    digest.new_today = [
-        p
-        for p in fresh
-        if not p.scam_flag and p.arrived_at is not None and p.arrived_at.date() == today
-    ]
-
-    digest.best = sorted(
-        [p for p in fresh if not p.scam_flag and p.score >= best_score],
-        key=lambda p: p.score,
-        reverse=True,
-    )[:max_best]
-
-    digest.flagged = [p for p in fresh if p.scam_flag]
+    candidates = [p for p in fresh if not is_scam(p)]
+    # New jobs: most recently posted first (unknown dates use first-seen).
+    newest = sorted(
+        candidates, key=lambda p: (posted_or_arrived(p), effective_score(p)), reverse=True
+    )
+    digest.new_total = len(newest)
+    digest.new_today = newest[: max(max_items, 0)]
+    ranked = sorted(
+        candidates, key=lambda p: (effective_score(p), posted_or_arrived(p)), reverse=True
+    )
+    digest.best = [p for p in ranked if effective_score(p) >= best_score][:max_best]
+    digest.flagged = [p for p in fresh if is_scam(p)]
     digest.pending_approvals = session.query(PendingAction).filter_by(status="pending").count()
+
+    shown: dict[int, Posting] = {}
+    for post in [*digest.closing, *digest.best, *digest.new_today, *digest.flagged]:
+        shown.setdefault(id(post), post)
+    digest.tokens = [_token(p) for p in shown.values()]
 
     parts = [kind, now.strftime("%Y-%m-%d")]
     if kind == "urgent":
         parts.append(f"{len(digest.closing) + len(digest.best)} urgent")
     else:
-        parts.append(f"{len(digest.new_today)} new, {len(digest.closing)} closing soon")
+        parts.append(f"{digest.new_total} new, {len(digest.closing)} closing soon")
     digest.subject = "JobGuard " + " — ".join(parts)
     return digest
 
 
+def _source_label(post: Posting) -> str:
+    """Short 'where it came from' tag, e.g. naukri / board:razorpay."""
+    seen = list(post.seen_on or []) or [post.source or ""]
+    labels: list[str] = []
+    for src in seen:
+        parts = (src or "").split(":")
+        label = parts[-1] if src.startswith("board:") else (parts[0] or "")
+        if src in ("gmail", "imap"):
+            from jobguard.sources.parsers import detect_platform
+
+            platform = detect_platform(post.sender or "")
+            label = platform if platform != "unknown" else "email"
+        if label and label not in labels:
+            labels.append(label)
+    return ", ".join(labels[:3])
+
+
+def _score_label(post: Posting) -> str:
+    score = effective_score(post)
+    kind = "AI" if post.pipe_status == "done" else "quick"
+    return f"{score:.0f} ({kind})"
+
+
 def _row(post: Posting, extra: str = "") -> str:
     title = html.escape(f"{post.role} at {post.company}".strip(" at"))
-    where = html.escape(post.location or "")
+    where = html.escape(post.location or "location n/a")
     link = html.escape(post.link or "")
     anchor = f' <a href="{link}">apply</a>' if link else ""
-    return f"<li><b>{title}</b> ({where}){anchor}{extra}</li>"
+    via = html.escape(_source_label(post))
+    via_html = f" <small>via {via}</small>" if via else ""
+    return f"<li><b>{title}</b> ({where}){anchor}{via_html}{extra}</li>"
 
 
-def render_html(session: Session, digest: Digest) -> str:
-    """Digest as HTML (all dynamic content escaped)."""
+def _short_gap(post: Posting, resume: Resume | None) -> str:
+    if resume is None:
+        return ""
+    from jobguard.resume.checker import keyword_gap
+
+    text = "\n".join([post.role or "", " ".join(post.skills or []), post.body or ""])
+    _, missing = keyword_gap(text, resume)
+    return ("missing: " + ", ".join(missing[:3])) if missing else ""
+
+
+def _rest(digest: Digest) -> list[Posting]:
+    best = {id(p) for p in digest.best} | {id(p) for p in digest.closing}
+    return [p for p in digest.new_today if id(p) not in best]
+
+
+def render_html(
+    session: Session, digest: Digest, resume: Resume | None = None, *, personal: bool = True
+) -> str:
+    """Digest as HTML (all dynamic content escaped).
+
+    ``personal=False`` (copies for DIGEST_RECIPIENTS) leaves out everything
+    derived from the owner's resume and the owner's pending approvals.
+    """
+    if not personal:
+        resume = None
     sections: list[str] = []
+    if digest.best:
+        chunks = []
+        for post in digest.best:
+            note = _tailoring_note(session, post, resume) if personal else ""
+            extra = (
+                f" — {html.escape(posted_label(post))} · score {html.escape(_score_label(post))}"
+            )
+            if note:
+                extra += f"<br/>Resume: {html.escape(note)}"
+            chunks.append(_row(post, extra))
+        sections.append(f"<h2>Best matches</h2><ul>{''.join(chunks)}</ul>")
     if digest.closing:
         rows = []
         for post in digest.closing:
             label = post.deadline.isoformat() if post.deadline else "date unknown"
             rows.append(_row(post, f" — closes {html.escape(label)}"))
         sections.append(f"<h2>Closing soon</h2><ul>{''.join(rows)}</ul>")
-    if digest.new_today:
-        sections.append(f"<h2>New today</h2><ul>{''.join(_row(p) for p in digest.new_today)}</ul>")
-    if digest.best:
-        chunks = []
-        for post in digest.best:
-            note = _tailoring_note(session, post)
-            extra = f" — score {post.score:.0f}"
-            if note:
-                extra += f"<br/>Tailoring: {html.escape(note)}"
-            chunks.append(_row(post, extra))
-        sections.append(f"<h2>Best matches</h2><ul>{''.join(chunks)}</ul>")
+    rest = _rest(digest)
+    if rest:
+        rows = []
+        for post in rest:
+            extra = f" — {html.escape(posted_label(post))} · {html.escape(_score_label(post))}"
+            gap = _short_gap(post, resume)
+            if gap:
+                extra += f" — <small>{html.escape(gap)}</small>"
+            rows.append(_row(post, extra))
+        sections.append(
+            f"<h2>New internships ({digest.new_total}), newest first</h2><ul>{''.join(rows)}</ul>"
+        )
+    hidden = digest.new_total - len(digest.new_today)
+    if hidden > 0:
+        sections.append(
+            f"<p>+{hidden} more older postings: they will appear in the next digest "
+            "and are on the dashboard now.</p>"
+        )
     if digest.flagged:
         sections.append(
             f"<h2>Flagged suspicious</h2><ul>{''.join(_row(p) for p in digest.flagged)}</ul>"
         )
-    if digest.pending_approvals:
+    if digest.pending_approvals and personal:
         sections.append(
             f"<h2>Needs your approval</h2><p>{digest.pending_approvals} pending action(s).</p>"
         )
@@ -172,33 +296,55 @@ def render_html(session: Session, digest: Digest) -> str:
     )
 
 
-def render_text(session: Session, digest: Digest) -> str:
-    """Digest as plain text (same sections, no markup)."""
+def render_text(
+    session: Session, digest: Digest, resume: Resume | None = None, *, personal: bool = True
+) -> str:
+    """Digest as plain text (same sections, no markup; see ``render_html``)."""
+    if not personal:
+        resume = None
     lines = [digest.subject, "=" * len(digest.subject), ""]
 
-    def section(title: str, posts: list[Posting], extra: str = "") -> None:
-        if not posts:
-            return
-        lines.append(f"{title}:")
-        for post in posts:
-            lines.append(f"- {post.role} at {post.company} ({post.location}) {extra}".rstrip())
-            if post.link:
-                lines.append(f"  {post.link}")
-        lines.append("")
+    def entry(post: Posting, extra: str = "") -> None:
+        via = _source_label(post)
+        lines.append(
+            f"- {post.role} at {post.company} ({post.location or 'location n/a'})"
+            f"{' via ' + via if via else ''} {extra}".rstrip()
+        )
+        if post.link:
+            lines.append(f"  {post.link}")
 
-    section(
-        "Closing soon",
-        digest.closing,
-        "(deadline near)",
-    )
-    section("New today", digest.new_today)
-    section("Best matches", digest.best)
+    if digest.best:
+        lines.append("Best matches:")
+        for post in digest.best:
+            entry(post, f"[{posted_label(post)}, score {_score_label(post)}]")
+            note = _tailoring_note(session, post, resume) if personal else ""
+            if note:
+                lines.append(f"  Resume: {note}")
+        lines.append("")
+    if digest.closing:
+        lines.append("Closing soon:")
+        for post in digest.closing:
+            entry(post, "(deadline near)")
+        lines.append("")
+    rest = _rest(digest)
+    if rest:
+        lines.append(f"New internships ({digest.new_total}), newest first:")
+        for post in rest:
+            gap = _short_gap(post, resume)
+            entry(
+                post, f"[{posted_label(post)}, {_score_label(post)}]" + (f" {gap}" if gap else "")
+            )
+        lines.append("")
+    hidden = digest.new_total - len(digest.new_today)
+    if hidden > 0:
+        lines.append(f"+{hidden} more older postings (next digest / dashboard).")
+        lines.append("")
     if digest.flagged:
         lines.append("Flagged suspicious (do NOT apply without review):")
         for post in digest.flagged:
             lines.append(f"- {post.role} at {post.company}")
         lines.append("")
-    if digest.pending_approvals:
+    if digest.pending_approvals and personal:
         lines.append(f"Needs your approval: {digest.pending_approvals} pending action(s).")
         lines.append("")
     if digest.is_empty:
