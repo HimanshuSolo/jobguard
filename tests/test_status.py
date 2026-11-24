@@ -80,6 +80,7 @@ def test_ensure_columns_patches_legacy_table(tmp_path: object) -> None:
         "postings.cheap_score",
         "postings.pipe_stage",
         "postings.pipe_status",
+        "postings.posted_at",
     ]
     assert ensure_columns(create_engine(f"sqlite:///{db}")) == []  # idempotent
 
