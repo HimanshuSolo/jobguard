@@ -1,28 +1,31 @@
 {% extends "base.html" %}
-{% block title %}Sources — JobGuard{% endblock %}
+{% set active = "/sources" %}
+{% block title %}Sources · JobGuard{% endblock %}
 {% block content %}
-<h1>Job <span class="accent">sources.</span></h1>
-<p class="sub">Gmail alerts, company boards, and RSS feeds — all automated on a schedule, or sync now.</p>
+<div class="page-head"><h1>Sources</h1>
+<p class="sub">Alert emails, company boards and job APIs. Synced on schedule, or now.</p></div>
 <form method="post" action="/sync">
 <input type="hidden" name="csrf" value="{{ csrf }}">
-<button class="btn btn-warm" type="submit">Sync now</button>
+<button class="btn btn-primary" type="submit">Sync now</button>
+<span class="meta">Takes 1–3 minutes.</span>
 </form>
 {% if result %}<p class="notice">{{ result }}</p>{% endif %}
-<table class="clean" style="margin-top:1rem">
+<h2>Configured</h2>
+<div class="table-wrap"><table class="clean">
 <tr><th>Source</th><th>Status</th><th>Note</th></tr>
 {% for a in adapters %}
 <tr>
 <td>{{ a.name }}</td>
-<td>{% if a.configured %}<span class="chip have">configured</span>{% else %}<span class="chip missing">skipped</span>{% endif %}</td>
-<td class="meta">{{ a.note }}</td>
+<td>{% if a.configured %}<span class="tag ok">on</span>{% else %}<span class="tag">off</span>{% endif %}</td>
+<td class="meta wrap">{{ a.note }}</td>
 </tr>
 {% endfor %}
-</table>
+</table></div>
 <h2>Latest runs</h2>
-<table class="clean">
-<tr><th>Time</th><th>Event</th><th>Detail</th></tr>
+<div class="table-wrap"><table class="clean">
+<tr><th>Time (UTC)</th><th>Event</th><th>Detail</th></tr>
 {% for e in recent %}
-<tr><td>{{ e.created_at }}</td><td>{{ e.event }}</td><td class="meta">{{ e.detail }}</td></tr>
+<tr><td>{{ e.created_at.strftime("%d %b %H:%M") if e.created_at else "" }}</td><td>{{ e.event }}</td><td class="meta wrap">{{ e.detail }}</td></tr>
 {% endfor %}
-</table>
+</table></div>
 {% endblock %}
